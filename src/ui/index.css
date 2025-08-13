@@ -120,4 +120,18 @@
 
 html, body, #root { height: 100%; }
 
+/* Map shadcn classnames to Tailwind v4 theme tokens so components (e.g., Checkbox) are visible */
+@utility bg-primary { background-color: var(--color-primary); }
+@utility text-primary-foreground { color: var(--color-primary-foreground); }
+@utility bg-secondary { background-color: var(--color-secondary); }
+@utility text-secondary-foreground { color: var(--color-secondary-foreground); }
+@utility bg-accent { background-color: var(--color-accent); }
+@utility text-accent-foreground { color: var(--color-accent-foreground); }
+@utility bg-destructive { background-color: var(--color-destructive); }
+@utility text-destructive-foreground { color: var(--color-destructive-foreground); }
+@utility border-input { border-color: var(--color-input); }
+@utility border-destructive { border-color: var(--color-destructive); }
+@utility ring-ring { --tw-ring-color: var(--color-ring); }
+@utility ring-offset-background { --tw-ring-offset-color: var(--color-background); }
+
 
