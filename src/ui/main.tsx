@@ -6,9 +6,11 @@ import { ResizableHandle } from './components/ui/resizable'
 
 function App() {
 	return (
-		<div className="p-4 space-y-3">
+		<div className="h-full flex flex-col p-4 gap-3 min-h-0">
 			<h2 className="text-lg font-semibold">UI Demo</h2>
-			<DataTableDemo />
+			<div className="flex-1 min-h-0">
+				<DataTableDemo />
+			</div>
 			<ResizableHandle />
 		</div>
 	)

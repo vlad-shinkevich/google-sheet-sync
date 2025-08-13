@@ -13,9 +13,12 @@ Structure
 - UI entry: `src/ui/ui.html` + React app `src/ui/main.tsx` → `dist/src/ui/ui.html`
 - Manifest: `manifest.json` → points to `dist/code.js` and `dist/src/ui/ui.html`
 - UI components:
-  - Table demo with selection + Shift‑range: `src/ui/components/data-table-demo.tsx`
+  - Table demo with selection + Shift‑range + virtualization: `src/ui/components/data-table-demo.tsx`
   - shadcn primitives: `src/ui/components/ui/{button,checkbox,input,table}.tsx`
   - Resize handle (shadcn‑style): `src/ui/components/ui/resizable.tsx`
+  - Tabs wrapper: `src/ui/components/ui/tabs.tsx`
+  - ScrollArea wrapper: `src/ui/components/ui/scroll-area.tsx`
+  - Vertical scroll affordance arrows: `src/ui/components/vertical-scroll-affordance.tsx`
 - Styling: Tailwind v4 in `src/ui/index.css` (`@import "tailwindcss"`, `@theme`)
 
 Figma window sizing
@@ -31,5 +34,6 @@ npx shadcn@latest add button
 
 Notes
 - Tailwind v4 requires `@tailwindcss/postcss` (configured in `postcss.config.js`).
-- Network/API access to Google Sheets can be added by whitelisting `https://www.googleapis.com` in `manifest.json`.
+- Network/API access: `manifest.json` whitelists `https://www.googleapis.com`, `https://sheets.googleapis.com`, and backend `https://google-sheet-sync-api.vercel.app`.
+- OAuth: UI opens browser via `figma.openExternal`, tokens are stored in `figma.clientStorage`.
 
