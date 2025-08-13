@@ -8,35 +8,32 @@ import {
     flexRender,
 } from "@tanstack/react-table"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table"
+import { Button } from "./ui/button"
+import { Input } from "./ui/input"
 import { Checkbox } from "./ui/checkbox"
 
-type Item = {
-	id: string
-	name: string
-	email: string
-	status: "active" | "disabled"
-	role: "admin" | "editor" | "viewer"
-	department: string
-	location: string
-	createdAt: string
-	score: number
-}
-
-const sample: Item[] = [
-	{ id: "1", name: "Alice", email: "alice@example.com", status: "active", role: "admin", department: "Design", location: "Berlin", createdAt: "2024-10-01", score: 92 },
-	{ id: "2", name: "Bob", email: "bob@example.com", status: "disabled", role: "viewer", department: "Marketing", location: "Paris", createdAt: "2024-09-14", score: 67 },
-	{ id: "3", name: "Carol", email: "carol@example.com", status: "active", role: "editor", department: "Engineering", location: "NYC", createdAt: "2024-08-22", score: 88 },
-	{ id: "4", name: "Dan", email: "dan@example.com", status: "active", role: "viewer", department: "Support", location: "Remote", createdAt: "2024-07-05", score: 73 },
-	{ id: "5", name: "Eve", email: "eve@example.com", status: "disabled", role: "editor", department: "Sales", location: "London", createdAt: "2024-06-11", score: 81 },
-]
+type RowData = Record<string, string>
 
 export function DataTableDemo() {
     const [rowSelection, setRowSelection] = React.useState({})
     const lastIndexRef = React.useRef<number | null>(null)
     const shiftRef = React.useRef(false)
+    const [sessionId, setSessionId] = React.useState<string | null>(null)
+    const [sheetUrl, setSheetUrl] = React.useState('')
+    const [loading, setLoading] = React.useState(false)
+    const [headers, setHeaders] = React.useState<Array<{ key: string; label: string }>>([
+        { key: 'date', label: 'date' },
+        { key: 'status', label: 'status' },
+        { key: 'name', label: 'name' },
+        { key: 'link', label: 'link' },
+        { key: 'image', label: 'image' },
+        { key: 'review', label: 'review' },
+        { key: 'rework', label: 'rework' },
+    ])
+    const [rows, setRows] = React.useState<RowData[]>([])
 
-	const columns = useMemo<ColumnDef<Item>[]>(
-		() => [
+    const columns = useMemo<ColumnDef<RowData>[]>(
+        () => [
             {
                 id: "select",
                 header: ({ table }) => (
@@ -77,20 +74,13 @@ export function DataTableDemo() {
                 enableSorting: false,
                 enableHiding: false,
             },
-			{ accessorKey: "name", header: "Name" },
-			{ accessorKey: "email", header: "Email" },
-			{ accessorKey: "status", header: "Status" },
-			{ accessorKey: "role", header: "Role" },
-			{ accessorKey: "department", header: "Department" },
-			{ accessorKey: "location", header: "Location" },
-			{ accessorKey: "createdAt", header: "Created" },
-			{ accessorKey: "score", header: "Score" },
+            ...headers.map((h) => ({ accessorKey: h.key, header: h.label } as ColumnDef<RowData>)),
 		],
-        [],
+        [headers],
 	)
 
-	const table = useReactTable({
-        data: sample,
+    const table = useReactTable({
+        data: rows,
         columns,
         getCoreRowModel: getCoreRowModel(),
         enableRowSelection: true,
@@ -98,8 +88,80 @@ export function DataTableDemo() {
         state: { rowSelection },
     })
 
+    // OAuth start
+    async function startOAuth() {
+        const r = await fetch('https://google-sheet-sync-api.vercel.app/api/oauth/start').then(r=>r.json())
+        setSessionId(r.sessionId)
+        parent.postMessage({ pluginMessage: { type: 'oauth/open', url: r.url } }, '*')
+        // simple polling
+        let done = false
+        while (!done) {
+            await new Promise(res=>setTimeout(res, 1000))
+            const polled = await fetch(`https://google-sheet-sync-api.vercel.app/api/oauth/poll?sessionId=${r.sessionId}`).then(r=>r.json()).catch(()=>null)
+            if (polled?.done && polled?.result?.tokens) {
+                parent.postMessage({ pluginMessage: { type: 'oauth/save', token: polled.result.tokens } }, '*')
+                done = true
+            }
+        }
+    }
+
+    function parseSheetId(url: string): string | null {
+        // Supports: https://docs.google.com/spreadsheets/d/<sheetId>/edit...
+        const m = url.match(/spreadsheets\/d\/([a-zA-Z0-9-_]+)/)
+        return m?.[1] ?? null
+    }
+
+    async function loadSheet() {
+        const sheetId = parseSheetId(sheetUrl)
+        if (!sheetId) return alert('Paste a valid Google Sheet URL')
+        setLoading(true)
+        // ask worker for stored token
+        parent.postMessage({ pluginMessage: { type: 'oauth/get' } }, '*')
+        const token = await new Promise<any>((resolve) => {
+            function onMessage(e: MessageEvent) {
+                const msg = (e.data && e.data.pluginMessage) || e.data
+                if (msg?.type === 'oauth/token') {
+                    window.removeEventListener('message', onMessage)
+                    resolve(msg.token)
+                }
+            }
+            window.addEventListener('message', onMessage)
+        })
+        if (!token?.access_token) {
+            setLoading(false)
+            return alert('Connect Google first')
+        }
+        // Example read first sheet values via Google Sheets API
+        const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A1:Z1000`, {
+            headers: { Authorization: `Bearer ${token.access_token}` },
+        }).then(r=>r.json()).catch(()=>null)
+        setLoading(false)
+        if (!res?.values) {
+            return alert('Failed to load sheet values')
+        }
+        const values: string[][] = res.values
+        const labels = values[0]?.map(String) ?? []
+        const toKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_')
+        const keys = labels.map(toKey)
+        const dataRows: RowData[] = values.slice(1).map((row) => {
+            const obj: RowData = {}
+            keys.forEach((k, i) => { obj[k] = row[i] ?? '' })
+            return obj
+        })
+        setHeaders(labels.map((label, i) => ({ label, key: keys[i] })))
+        setRows(dataRows)
+    }
+
 	return (
-		<div className="overflow-x-auto">
+			<div className="space-y-2 overflow-x-auto">
+				<div className="flex items-center gap-2 justify-between">
+					<div className="text-sm text-muted-foreground">Test data</div>
+					<div className="flex items-center gap-2">
+						<Input placeholder="Paste Google Sheet URL" value={sheetUrl} onChange={(e)=>setSheetUrl(e.target.value)} className="w-[340px]" />
+						<Button size="sm" variant="outline" onClick={loadSheet} disabled={loading}>{loading ? 'Loading…' : 'Load'}</Button>
+						<Button size="sm" onClick={startOAuth}>Connect Google</Button>
+					</div>
+				</div>
 			<div className="inline-block min-w-max rounded-md border overflow-hidden">
 				<Table className="w-full">
 				<TableHeader>

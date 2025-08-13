@@ -28,6 +28,19 @@ figma.ui.onmessage = (msg) => {
         const h = Math.max(0, Math.round(msg.height))
         figma.ui.resize(w, h)
     }
+    if (msg.type === 'oauth/open' && typeof msg.url === 'string') {
+        figma.openExternal(msg.url)
+    }
+    if (msg.type === 'oauth/save' && msg.token) {
+        figma.clientStorage.setAsync('googleTokens', msg.token).then(() => {
+            figma.notify('Google connected')
+        })
+    }
+    if (msg.type === 'oauth/get') {
+        figma.clientStorage.getAsync('googleTokens').then((token) => {
+            figma.ui.postMessage({ type: 'oauth/token', token })
+        })
+    }
 }
 
 

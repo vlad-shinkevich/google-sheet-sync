@@ -14,7 +14,9 @@
   "ui": "dist/src/ui/ui.html",
   "networkAccess": {
     "allowedDomains": [
-      "none"
+      "https://google-sheet-sync-api.vercel.app",
+      "https://www.googleapis.com",
+      "https://sheets.googleapis.com"
     ]
   }
 }
