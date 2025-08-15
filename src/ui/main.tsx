@@ -1,7 +1,7 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
-import { DataTableDemo, RowData, ConfirmPayload } from './components/data-table-demo'
+import { SheetSyncWizard, RowData, ConfirmPayload } from './components/sheets/SheetSyncWizard'
 import { ResizableHandle } from './components/ui/resizable'
 
 type Step = 'select' | 'confirm'
@@ -35,7 +35,7 @@ function App() {
             <h2 className="text-lg font-semibold">UI Demo</h2>
             <div className="flex-1 min-h-0 relative">
                 <div className={step === 'select' ? 'h-full' : 'hidden'}>
-                    <DataTableDemo onSelectionChange={setSelectedRows} onNext={(p) => { setConfirmPayload(p); setStep('confirm') }} />
+                    <SheetSyncWizard onSelectionChange={setSelectedRows} onNext={(p) => { setConfirmPayload(p); setStep('confirm') }} />
                 </div>
                 <div className={step === 'confirm' ? 'h-full' : 'hidden'}>
                     {confirmPayload && <ConfirmScreen payload={confirmPayload} onBack={() => setStep('select')} />}
