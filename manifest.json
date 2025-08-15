@@ -16,7 +16,10 @@
     "allowedDomains": [
       "https://google-sheet-sync-api.vercel.app",
       "https://www.googleapis.com",
-      "https://sheets.googleapis.com"
+      "https://sheets.googleapis.com",
+      "https://openidconnect.googleapis.com",
+      "https://lh3.googleusercontent.com",
+      "https://oauth2.googleapis.com"
     ]
   }
 }

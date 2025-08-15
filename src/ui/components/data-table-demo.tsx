@@ -10,6 +10,9 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table"
 import { Button } from "./ui/button"
 import { Input } from "./ui/input"
+import { SourceStep } from "./steps/SourceStep"
+import { TabsStep } from "./steps/TabsStep"
+import { AuthStep } from "./steps/AuthStep"
 import { Tabs, TabsList, TabsTrigger } from "./ui/tabs"
 import { ScrollArea } from "./ui/scroll-area"
 import { VerticalScrollAffordance } from "./vertical-scroll-affordance"
@@ -17,15 +20,85 @@ import { VerticalScrollAffordance } from "./vertical-scroll-affordance"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { Checkbox } from "./ui/checkbox"
 
-type RowData = Record<string, string>
+export type RowData = Record<string, string>
 
-export function DataTableDemo() {
-    const [rowSelection, setRowSelection] = React.useState({})
+type DataTableDemoProps = {
+    onSelectionChange?: (rows: RowData[]) => void
+    onNext?: (payload: ConfirmPayload) => void
+}
+
+export type ConfirmPayload = {
+    selectedTabs: string[]
+    byTab: Record<string, { headers: Array<{ key: string; label: string }>; rows: RowData[] }>
+}
+
+export function DataTableDemo(props: DataTableDemoProps) {
+    const [tabRowSelection, setTabRowSelection] = React.useState<Record<string, Record<string, boolean>>>({})
     const lastIndexRef = React.useRef<number | null>(null)
     const shiftRef = React.useRef(false)
     const [sessionId, setSessionId] = React.useState<string | null>(null)
+    const pollTimerRef = React.useRef<number | null>(null)
+    const [userinfo, setUserinfo] = React.useState<{ email?: string; name?: string; picture?: string } | null>(null)
+    // Helper to send debug logs to main
+    const uiLog = React.useCallback((message: any, notify = false) => {
+        try {
+            // eslint-disable-next-line no-console
+            console.debug('[UI]', message)
+        } catch {}
+        try {
+            parent.postMessage({ pluginMessage: { type: 'log', message, notify } }, '*')
+        } catch {}
+    }, [])
+
+    // On mount, check token validity (userinfo and a lightweight Google API) and decide the step
+    React.useEffect(() => {
+        let cancelled = false
+        uiLog('mount: requesting oauth/get')
+        async function run() {
+            try {
+                parent.postMessage({ pluginMessage: { type: 'oauth/get' } }, '*')
+                const { token, userinfo: savedUserinfo } = await new Promise<any>((resolve) => {
+                    function onMessage(e: MessageEvent) {
+                        const msg = (e.data && e.data.pluginMessage) || e.data
+                        if (msg?.type === 'oauth/token') {
+                            window.removeEventListener('message', onMessage)
+                            resolve({ token: msg.token, userinfo: msg.userinfo })
+                        }
+                    }
+                    window.addEventListener('message', onMessage)
+                })
+                const accessToken = token?.access_token
+                if (savedUserinfo && !cancelled) setUserinfo(savedUserinfo)
+                if (!accessToken) {
+                    if (!cancelled) setUiStep('auth')
+                    return
+                }
+                // Check token freshness via tokeninfo (doesn't require Drive/Sheets calls)
+                // https://oauth2.googleapis.com/tokeninfo?access_token=
+                try {
+                    const resp = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`)
+                    if (resp.status !== 200) {
+                        uiLog({ tokeninfo: resp.status }, true)
+                        if (!cancelled) setUiStep('auth')
+                        return
+                    }
+                } catch (err) {
+                    uiLog({ error: 'tokeninfo request failed', err }, true)
+                    if (!cancelled) setUiStep('auth')
+                    return
+                }
+                if (!cancelled) setUiStep('source')
+            } catch (e) {
+                uiLog({ error: 'mount oauth/get flow failed', e }, true)
+                if (!cancelled) setUiStep('auth')
+            }
+        }
+        run()
+        return () => { cancelled = true }
+    }, [uiLog])
     const [sheetUrl, setSheetUrl] = React.useState('')
     const [loading, setLoading] = React.useState(false)
+    const [uiStep, setUiStep] = React.useState<'auth' | 'source' | 'tabs' | 'table'>('source')
     const [headers, setHeaders] = React.useState<Array<{ key: string; label: string }>>([
         { key: 'date', label: 'date' },
         { key: 'status', label: 'status' },
@@ -39,6 +112,25 @@ export function DataTableDemo() {
     const [sheets, setSheets] = React.useState<Array<{ id: number; title: string }>>([])
     const [activeSheet, setActiveSheet] = React.useState<string | null>(null)
     const [sheetCache, setSheetCache] = React.useState<Record<string, { headers: Array<{key:string;label:string}>, rows: RowData[] }>>({})
+    const [selectedTabs, setSelectedTabs] = React.useState<Set<string>>(new Set())
+
+    // Fetch profile if tokens exist but userinfo absent
+    async function fetchGoogleUserinfo(accessToken: string): Promise<{ email?: string; name?: string; picture?: string } | null> {
+        try {
+            const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+                headers: { Authorization: `Bearer ${accessToken}` },
+            })
+            if (res.status === 401) {
+                uiLog('userinfo 401 (ignoring, continue with token-only)', true)
+                return null
+            }
+            if (!res.ok) return null
+            const u = await res.json()
+            return { email: u.email, name: u.name, picture: u.picture }
+        } catch {
+            return null
+        }
+    }
 
     const columns = useMemo<ColumnDef<RowData>[]>(
         () => [
@@ -87,14 +179,52 @@ export function DataTableDemo() {
         [headers],
 	)
 
+    const currentSheetKey = (activeSheet ?? '__none__') as string
+    const currentRowSelection = tabRowSelection[currentSheetKey] ?? {}
+
     const table = useReactTable({
         data: rows,
         columns,
         getCoreRowModel: getCoreRowModel(),
         enableRowSelection: true,
-        onRowSelectionChange: setRowSelection,
-        state: { rowSelection },
+        onRowSelectionChange: (updater) => {
+            setTabRowSelection((prev) => {
+                const prevForTab = prev[currentSheetKey] ?? {}
+                const nextForTab = typeof updater === 'function' ? (updater as (old: Record<string, boolean>) => Record<string, boolean>)(prevForTab) : updater
+                return { ...prev, [currentSheetKey]: nextForTab }
+            })
+        },
+        state: { rowSelection: currentRowSelection },
     })
+
+    React.useEffect(() => {
+        if (!props.onSelectionChange) return
+        const selected = table.getFilteredSelectedRowModel().rows.map((r) => r.original as RowData)
+        props.onSelectionChange(selected)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [tabRowSelection, rows, activeSheet])
+
+    function buildConfirmPayload(): ConfirmPayload {
+        const titles = Array.from(selectedTabs)
+        const byTab: Record<string, { headers: Array<{ key: string; label: string }>; rows: RowData[] }> = {}
+        titles.forEach((t) => {
+            const data = sheetCache[t]
+            if (!data) return
+            const selectionMap = tabRowSelection[t] ?? {}
+            const filteredRows = data.rows.filter((_, idx) => !!selectionMap[String(idx)])
+            byTab[t] = { headers: data.headers, rows: filteredRows }
+        })
+        return { selectedTabs: titles, byTab }
+    }
+
+    const totalSelectedCount = React.useMemo(() => {
+        let count = 0
+        Array.from(selectedTabs).forEach((t) => {
+            const m = tabRowSelection[t]
+            if (m) count += Object.keys(m).length
+        })
+        return count
+    }, [selectedTabs, tabRowSelection])
 
     // Virtualizer (rows)
     const parentRef = React.useRef<HTMLDivElement | null>(null)
@@ -109,20 +239,60 @@ export function DataTableDemo() {
 
     // OAuth start
     async function startOAuth() {
+        uiLog('oauth/start')
+        // Clear any previous polling interval
+        if (pollTimerRef.current !== null) {
+            window.clearInterval(pollTimerRef.current)
+            pollTimerRef.current = null
+        }
         const r = await fetch('https://google-sheet-sync-api.vercel.app/api/oauth/start').then(r=>r.json())
         setSessionId(r.sessionId)
         parent.postMessage({ pluginMessage: { type: 'oauth/open', url: r.url } }, '*')
-        // simple polling
-        let done = false
-        while (!done) {
-            await new Promise(res=>setTimeout(res, 1000))
-            const polled = await fetch(`https://google-sheet-sync-api.vercel.app/api/oauth/poll?sessionId=${r.sessionId}`).then(r=>r.json()).catch(()=>null)
-            if (polled?.done && polled?.result?.tokens) {
-                parent.postMessage({ pluginMessage: { type: 'oauth/save', token: polled.result.tokens } }, '*')
-                done = true
+        // polling via interval to ensure cleanup works reliably
+        const mySession = r.sessionId as string
+        pollTimerRef.current = window.setInterval(async () => {
+            try {
+                const polled = await fetch(`https://google-sheet-sync-api.vercel.app/api/oauth/poll?sessionId=${mySession}`).then(r=>r.json()).catch(()=>null)
+                if (polled?.done && polled?.result?.tokens) {
+                    uiLog({ receive: 'oauth/poll final', hasTokens: true, hasUser: !!polled.result.userinfo?.email }, true)
+                    parent.postMessage({ pluginMessage: { type: 'oauth/save', token: polled.result.tokens, userinfo: polled.result.userinfo } }, '*')
+                    if (polled.result.userinfo) setUserinfo(polled.result.userinfo)
+                    // Sync back from storage
+                    parent.postMessage({ pluginMessage: { type: 'oauth/get' } }, '*')
+                    await new Promise<void>((resolve) => {
+                        function onMsg(e: MessageEvent) {
+                            const msg = (e.data && e.data.pluginMessage) || e.data
+                            if (msg?.type === 'oauth/token') {
+                                window.removeEventListener('message', onMsg)
+                                if (msg.userinfo) setUserinfo(msg.userinfo)
+                                resolve()
+                            }
+                        }
+                        window.addEventListener('message', onMsg)
+                    })
+                    setUiStep('source')
+                    if (pollTimerRef.current !== null) {
+                        window.clearInterval(pollTimerRef.current)
+                        pollTimerRef.current = null
+                        uiLog('oauth/poll stopped')
+                    }
+                }
+            } catch (e) {
+                uiLog({ error: 'oauth/poll iteration failed', e })
+            }
+        }, 1000)
+    }
+
+    // Cleanup polling on unmount
+    React.useEffect(() => {
+        return () => {
+            if (pollTimerRef.current !== null) {
+                window.clearInterval(pollTimerRef.current)
+                pollTimerRef.current = null
+                uiLog('oauth/poll cleared on unmount')
             }
         }
-    }
+    }, [uiLog])
 
     function parseSheetId(url: string): string | null {
         // Supports: https://docs.google.com/spreadsheets/d/<sheetId>/edit...
@@ -131,10 +301,86 @@ export function DataTableDemo() {
     }
 
     async function loadSheet() {
+        uiLog('loadSheet: begin')
         const sheetId = parseSheetId(sheetUrl)
         if (!sheetId) return alert('Paste a valid Google Sheet URL')
         setLoading(true)
         // ask worker for stored token
+        parent.postMessage({ pluginMessage: { type: 'oauth/get' } }, '*')
+        const { token, userinfo: savedUserinfo } = await new Promise<any>((resolve) => {
+            function onMessage(e: MessageEvent) {
+                const msg = (e.data && e.data.pluginMessage) || e.data
+                if (msg?.type === 'oauth/token') {
+                    window.removeEventListener('message', onMessage)
+                    resolve({ token: msg.token, userinfo: msg.userinfo })
+                }
+            }
+            window.addEventListener('message', onMessage)
+        })
+        if (savedUserinfo) setUserinfo(savedUserinfo)
+        if (!token?.access_token) {
+            setLoading(false)
+            uiLog('loadSheet: no token, switching to auth', true)
+            setUiStep('auth')
+            return
+        }
+        // Only fetch sheets list (metadata) for now
+        const meta = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets(properties(sheetId,title,index))`,
+            { headers: { Authorization: `Bearer ${token.access_token}` } },
+        ).then(r=>r.json()).catch((e)=>{ uiLog({ error: 'meta fetch failed', e }, true); return null })
+        if (meta?.error?.code === 401) {
+            uiLog('meta 401 → clearing tokens and showing auth', true)
+            parent.postMessage({ pluginMessage: { type: 'oauth/clear' } }, '*')
+            setLoading(false)
+            setUiStep('auth')
+            return
+        }
+        const list = (meta?.sheets ?? []).map((s:any)=>({ id: s.properties.sheetId, title: s.properties.title }))
+        setSheets(list)
+        const firstTitle = list[0]?.title
+        setActiveSheet(firstTitle ?? null)
+        setSelectedTabs(new Set(firstTitle ? [firstTitle] : []))
+        setLoading(false)
+        uiLog({ loadSheet: 'meta-only complete', sheets: list.map((s:any)=>s.title) })
+        setUiStep('tabs')
+    }
+
+    // Helper to fetch sheet values for a given sheet title using current URL/token
+    async function fetchValuesFor(sheetId: string, token: string, sheetTitle: string) {
+        const rangeTitle = `'${sheetTitle}'!A1:Z10000`
+        const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(rangeTitle)}`, {
+            headers: { Authorization: `Bearer ${token}` },
+        }).then(r=>r.json()).catch(()=>null)
+        const values: string[][] = res?.values ?? []
+        const maxCols = values.reduce((m, r) => Math.max(m, r?.length ?? 0), 0)
+        const headerRow = values[0] ?? []
+        const labels = Array.from({ length: maxCols }, (_, i) => String(headerRow[i] ?? `Column ${i+1}`))
+        const toKey = (s: string) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_')
+        const preliminary = labels.map(toKey)
+        const used = new Set<string>()
+        const keys = preliminary.map((k, i) => {
+            let base = k || `col_${i+1}`
+            let name = base
+            let n = 1
+            while (used.has(name)) { name = `${base}_${n++}` }
+            used.add(name)
+            return name
+        })
+        const dataRows: RowData[] = (values.length > 1 ? values.slice(1) : []).map((row) => {
+            const obj: RowData = {}
+            keys.forEach((k, i) => { obj[k] = (row && row[i] !== undefined ? row[i] : '') })
+            return obj
+        })
+        return { headers: labels.map((label, i) => ({ label, key: keys[i] })), rows: dataRows }
+    }
+
+    async function fetchSelectedTabsAndEnterTable() {
+        uiLog({ fetchSelectedTabs: Array.from(selectedTabs) })
+        const sheetId = parseSheetId(sheetUrl)
+        if (!sheetId) return alert('Paste a valid Google Sheet URL')
+        setLoading(true)
+        // get token
         parent.postMessage({ pluginMessage: { type: 'oauth/get' } }, '*')
         const token = await new Promise<any>((resolve) => {
             function onMessage(e: MessageEvent) {
@@ -148,60 +394,25 @@ export function DataTableDemo() {
         })
         if (!token?.access_token) {
             setLoading(false)
+            uiLog('enterTable: no token', true)
             return alert('Connect Google first')
         }
-        // Example read first sheet values via Google Sheets API
-        // Fetch sheets list (to render tabs)
-        const meta = await fetch(
-            `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets(properties(sheetId,title,index))`,
-            { headers: { Authorization: `Bearer ${token.access_token}` } },
-        ).then(r=>r.json()).catch(()=>null)
-        const list = (meta?.sheets ?? []).map((s:any)=>({ id: s.properties.sheetId, title: s.properties.title }))
-        setSheets(list)
-        const title = list[0]?.title
-        setActiveSheet(title ?? null)
-
-        // Prefetch values for ALL sheets in parallel so switching tabs is instant
-        async function fetchValues(sheetTitle: string) {
-            const rangeTitle = `'${sheetTitle}'!A1:Z10000`
-            const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(rangeTitle)}`, {
-                headers: { Authorization: `Bearer ${token.access_token}` },
-            }).then(r=>r.json()).catch(()=>null)
-            const values: string[][] = res?.values ?? []
-            // Determine max number of columns across all rows to avoid missing cols when header row is sparse
-            const maxCols = values.reduce((m, r) => Math.max(m, r?.length ?? 0), 0)
-            const headerRow = values[0] ?? []
-            const labels = Array.from({ length: maxCols }, (_, i) => String(headerRow[i] ?? `Column ${i+1}`))
-            const toKey = (s: string) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_')
-            const preliminary = labels.map(toKey)
-            const used = new Set<string>()
-            const keys = preliminary.map((k, i) => {
-                let base = k || `col_${i+1}`
-                let name = base
-                let n = 1
-                while (used.has(name)) { name = `${base}_${n++}` }
-                used.add(name)
-                return name
-            })
-            const dataRows: RowData[] = (values.length > 1 ? values.slice(1) : []).map((row) => {
-                const obj: RowData = {}
-                keys.forEach((k, i) => { obj[k] = (row && row[i] !== undefined ? row[i] : '') })
-                return obj
-            })
-            return { headers: labels.map((label, i) => ({ label, key: keys[i] })), rows: dataRows }
-        }
-
+        const titles = Array.from(selectedTabs)
         const entries = await Promise.all(
-            (list as Array<{title:string}>).map(async s => [s.title, await fetchValues(s.title)] as const)
+            titles.map(async (t) => [t, await fetchValuesFor(sheetId, token.access_token, t)] as const)
         )
         const cache: Record<string, { headers: Array<{key:string;label:string}>, rows: RowData[] }> = {}
         entries.forEach(([title, data]) => { cache[title] = data })
         setSheetCache(cache)
-        setLoading(false)
-        if (title && cache[title]) {
-            setHeaders(cache[title].headers)
-            setRows(cache[title].rows)
+        const first = titles[0]
+        setActiveSheet(first ?? null)
+        if (first && cache[first]) {
+            setHeaders(cache[first].headers)
+            setRows(cache[first].rows)
         }
+        setLoading(false)
+        uiLog({ enterTable: 'loaded data for tabs', tabs: titles })
+        setUiStep('table')
     }
 
     async function loadActiveSheet(title: string) {
@@ -212,24 +423,81 @@ export function DataTableDemo() {
         }
     }
 
-	return (
+    return (
         <div className="space-y-2 h-full flex flex-col min-h-0">
-					<div className="flex items-center gap-2 justify-between">
-					<div className="text-sm text-muted-foreground">Test data</div>
-					<div className="flex items-center gap-2">
-						<Input placeholder="Paste Google Sheet URL" value={sheetUrl} onChange={(e)=>setSheetUrl(e.target.value)} className="w-[340px]" />
-						<Button size="sm" variant="outline" onClick={loadSheet} disabled={loading}>{loading ? 'Loading…' : 'Load'}</Button>
-						<Button size="sm" onClick={startOAuth}>Connect Google</Button>
-					</div>
-				</div>
+                    {/* Step: Auth (only if not logged in) */}
+                    <div className={uiStep === 'auth' ? '' : 'hidden'}>
+                        <AuthStep onConnect={startOAuth} />
+                    </div>
 
-                    {(sheets.length > 0 && activeSheet) && (
+                    {/* Step: Source (URL + Connect + Load) */}
+                    <div className={uiStep === 'source' ? '' : 'hidden'}>
+                        <SourceStep
+                            sheetUrl={sheetUrl}
+                            loading={loading}
+                            onChangeUrl={setSheetUrl}
+                            onConnect={startOAuth}
+                            onLoad={loadSheet}
+                            userinfo={userinfo ?? undefined}
+                            onRefreshUserinfo={async () => {
+                                uiLog('manual refresh userinfo')
+                                parent.postMessage({ pluginMessage: { type: 'oauth/get' } }, '*')
+                                const { token } = await new Promise<any>((resolve) => {
+                                    function onMessage(e: MessageEvent) {
+                                        const msg = (e.data && e.data.pluginMessage) || e.data
+                                        if (msg?.type === 'oauth/token') {
+                                            window.removeEventListener('message', onMessage)
+                                            resolve({ token: msg.token })
+                                        }
+                                    }
+                                    window.addEventListener('message', onMessage)
+                                })
+                                if (!token?.access_token) {
+                                    uiLog('refresh userinfo: no token', true)
+                                    setUiStep('auth')
+                                    return
+                                }
+                                const u = await fetchGoogleUserinfo(token.access_token)
+                                if (!u) {
+                                    uiLog('refresh userinfo failed; token may be invalid', true)
+                                    return
+                                }
+                                setUserinfo(u)
+                                parent.postMessage({ pluginMessage: { type: 'oauth/save', userinfo: u } }, '*')
+                            }}
+                        />
+                    </div>
+
+                    {/* Step: Tabs selection */}
+                    {uiStep === 'tabs' && (
+                        <TabsStep
+                            sheets={sheets}
+                            selectedTabs={selectedTabs}
+                            loading={loading}
+                            onBack={() => setUiStep('source')}
+                            onNext={fetchSelectedTabsAndEnterTable}
+                            onToggleTab={(title, checked) => {
+                                setSelectedTabs((prev) => {
+                                    const next = new Set(prev)
+                                    if (checked) next.add(title)
+                                    else next.delete(title)
+                                    return next
+                                })
+                            }}
+                        />
+                    )}
+
+                    {/* Step: Table (only selected tabs) */}
+                    {(uiStep === 'table' && sheets.length > 0 && activeSheet) && (
                         <div className="px-2">
                             <ScrollArea>
                                 <div className="min-w-max">
+                                    <div className="flex items-center justify-between mb-1">
+                                        <Button size="sm" variant="outline" onClick={()=>setUiStep('tabs')}>Back</Button>
+                                    </div>
                                     <Tabs value={activeSheet} onValueChange={(v)=>{ setActiveSheet(v); loadActiveSheet(v) }}>
                                         <TabsList className="p-0">
-                                            {sheets.map(s => (
+                                            {sheets.filter(s => selectedTabs.has(s.title)).map(s => (
                                                 <TabsTrigger key={s.id} value={s.title} className="mx-0.5">
                                                     {s.title}
                                                 </TabsTrigger>
@@ -242,7 +510,7 @@ export function DataTableDemo() {
                     )}
                 <div className="flex-1 min-h-0 relative">
                     {/* Virtualized scroll container */}
-                    <div ref={parentRef} className="h-full overflow-auto">
+                    <div ref={parentRef} className={uiStep === 'table' ? 'h-full overflow-auto' : 'hidden'}>
                         <div className="inline-block min-w-max rounded-md border">
                         <Table className="w-full">
                 <TableHeader>
@@ -297,9 +565,22 @@ export function DataTableDemo() {
                     <VerticalScrollAffordance scrollRef={parentRef} />
                 </div>
 				
-            <div className="px-2 py-1 text-sm text-muted-foreground shrink-0">
-                {table.getFilteredSelectedRowModel().rows.length} of {table.getFilteredRowModel().rows.length} row(s) selected.
-            </div>
+            {uiStep === 'table' && (
+                <div className="px-2 py-1 text-sm text-muted-foreground shrink-0 flex items-center justify-between">
+                    <div>
+                        {table.getFilteredSelectedRowModel().rows.length} of {table.getFilteredRowModel().rows.length} row(s) selected.
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Button
+                            size="sm"
+                            onClick={() => props.onNext && props.onNext(buildConfirmPayload())}
+                            disabled={totalSelectedCount === 0 || !props.onNext}
+                        >
+                            Next
+                        </Button>
+                    </div>
+                </div>
+            )}
 		</div>
 	)
 }
