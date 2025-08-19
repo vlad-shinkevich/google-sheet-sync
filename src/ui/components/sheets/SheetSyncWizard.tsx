@@ -505,15 +505,47 @@ export function SheetSyncWizard(props: SheetSyncWizardProps) {
 								window.addEventListener('message', onTok)
 							})
 							if (token?.access_token) {
+								// First, get metadata to know mimeType and thumbnail
+								const metaUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?fields=thumbnailLink,mimeType`
+								const metaRes = await fetch(metaUrl, { headers: { Authorization: `Bearer ${token.access_token}` } })
+								if (metaRes.ok) {
+									const meta = await metaRes.json()
+									const mime = String(meta?.mimeType || '')
+									const thumb = String(meta?.thumbnailLink || '')
+									// If it's an image file — download original; otherwise try thumbnailLink
+									if (mime.startsWith('image/')) {
+										const driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`
+										const r = await fetch(driveUrl, { headers: { Authorization: `Bearer ${token.access_token}` } })
+										if (r.ok) {
+											const buf = await r.arrayBuffer()
+											console.debug('[UI] image/fetch ok (drive api original)', fileId, buf.byteLength)
+											parent.postMessage({ pluginMessage: { type: 'image/fetch:result', id, ok: true, buffer: buf } }, '*')
+											return
+										}
+									} else if (thumb) {
+										// Fetch thumbnail link (use proxy to satisfy CSP)
+										const proxiedThumb = `https://google-sheet-sync-api.vercel.app/api/proxy?url=${encodeURIComponent(thumb)}`
+										const rt = await fetch(proxiedThumb)
+										if (rt.ok) {
+											const buf = await rt.arrayBuffer()
+											console.debug('[UI] image/fetch ok (drive thumbnail)', fileId, buf.byteLength)
+											parent.postMessage({ pluginMessage: { type: 'image/fetch:result', id, ok: true, buffer: buf } }, '*')
+											return
+										} else {
+											console.warn('[UI] drive thumbnail fetch not ok', fileId, rt.status)
+										}
+									}
+								} else {
+									console.warn('[UI] drive meta fetch not ok', fileId, metaRes.status)
+								}
+								// As a last resort, try original media
 								const driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`
 								const r = await fetch(driveUrl, { headers: { Authorization: `Bearer ${token.access_token}` } })
 								if (r.ok) {
 									const buf = await r.arrayBuffer()
-									console.debug('[UI] image/fetch ok (drive api)', fileId, buf.byteLength)
+									console.debug('[UI] image/fetch ok (drive api fallback)', fileId, buf.byteLength)
 									parent.postMessage({ pluginMessage: { type: 'image/fetch:result', id, ok: true, buffer: buf } }, '*')
 									return
-								} else {
-									console.warn('[UI] drive api fetch not ok', fileId, r.status)
 								}
 							}
 						}
