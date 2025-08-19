@@ -70,6 +70,16 @@ figma.ui.onmessage = (msg) => {
             figma.ui.postMessage({ type: 'sync/text:result', error: String(error) })
         })
     }
+    if (msg.type === 'layers/getForSelection') {
+        const selection = figma.currentPage.selection
+        const target = selection && selection[0]
+        if (!target) {
+            figma.ui.postMessage({ type: 'layers/eligible', layers: [] })
+            return
+        }
+        const layers = collectEligibleLayers(target)
+        figma.ui.postMessage({ type: 'layers/eligible', layers })
+    }
 }
 
 type RowData = Record<string, string>
@@ -83,19 +93,52 @@ function findTagFromName(name: string): string | null {
     return m ? normalizeKey(m[1]) : null
 }
 
-function collectAllTextNodes(node: SceneNode): TextNode[] {
-    const result: TextNode[] = []
+function detectFieldType(value: string): 'image' | 'link' | 'text' {
+    const v = String(value || '').trim()
+    if (!v) return 'text'
+    try {
+        const u = new URL(v)
+        const host = u.host.toLowerCase()
+        const pathname = u.pathname.toLowerCase()
+        const isImageExt = /\.(png|jpe?g|gif|webp|svg)$/i.test(pathname)
+        const isGDrive = host.endsWith('googleusercontent.com') || host.includes('drive.google.com')
+        const knownCdn = host.includes('unsplash.com') || host.includes('picsum.photos') || host.includes('cloudinary.com')
+        if (isImageExt || isGDrive || knownCdn) return 'image'
+        return 'link'
+    } catch {
+        return 'text'
+    }
+}
+
+type NodesByTag = {
+    text: Map<string, TextNode[]>
+    fillable: Map<string, (SceneNode & { fills: readonly Paint[] | PluginAPI['mixed']; })[]>
+}
+
+function collectNodesByTag(node: SceneNode): NodesByTag {
+    const text = new Map<string, TextNode[]>()
+    const fillable = new Map<string, (SceneNode & { fills: readonly Paint[] | PluginAPI['mixed']; })[]>()
     function visit(n: SceneNode) {
+        const tag = findTagFromName((n as any).name || '')
         if (n.type === 'TEXT') {
-            result.push(n as TextNode)
-            return
+            if (tag) {
+                const arr = text.get(tag) || []
+                arr.push(n as TextNode)
+                text.set(tag, arr)
+            }
+        } else if ('fills' in n) {
+            if (tag) {
+                const arr = fillable.get(tag) || []
+                arr.push(n as any)
+                fillable.set(tag, arr)
+            }
         }
         if ('children' in n) {
             for (const c of n.children) visit(c as SceneNode)
         }
     }
     visit(node)
-    return result
+    return { text, fillable }
 }
 
 async function loadAllFontsInNode(textNode: TextNode): Promise<void> {
@@ -123,21 +166,126 @@ async function applyRowToClone(clone: SceneNode, row: RowData): Promise<{ update
     let updated = 0
     let skipped = 0
     const missing: string[] = []
-    const texts = collectAllTextNodes(clone)
-    for (const t of texts) {
-        const key = findTagFromName(t.name)
-        if (!key) { skipped++; continue }
+    const byTag = collectNodesByTag(clone)
+    const allTags = new Set<string>([...byTag.text.keys(), ...byTag.fillable.keys()])
+    try { console.log('[SYNC] tags found:', Array.from(allTags)) } catch {}
+    try { console.log('[SYNC] row keys:', Object.keys(row)) } catch {}
+    for (const key of allTags) {
         const value = row[key]
-        if (value === undefined) { missing.push(key); skipped++; continue }
-        await loadAllFontsInNode(t)
-        try {
-            t.characters = String(value ?? '')
-            updated++
-        } catch (e) {
-            skipped++
+        if (value === undefined) {
+            try { console.log('[SYNC] missing value for tag', key) } catch {}
+            missing.push(key); continue
+        }
+        let type = detectFieldType(value)
+        if (type !== 'image' && /image|img|photo|picture/i.test(key)) {
+            type = 'image'
+            try { console.log('[SYNC] forcing type image by tag name for', key) } catch {}
+        }
+        try { console.log('[SYNC] tag', key, 'type', type, 'value', String(value).slice(0, 120)) } catch {}
+        // Update text nodes
+        const texts = byTag.text.get(key) || []
+        for (const t of texts) {
+            try {
+                await loadAllFontsInNode(t)
+                if (type === 'link') {
+                    t.characters = String(value)
+                    // add hyperlink to full range
+                    try { t.setRangeHyperlink(0, t.characters.length, { type: 'URL', value: String(value) }) } catch {}
+                    updated++
+                } else if (type === 'text' || type === 'image') {
+                    // For image type on text node, fallback to setting text
+                    t.characters = String(value)
+                    updated++
+                }
+            } catch { skipped++ }
+        }
+        // Update fillable nodes with image if applicable
+        if (type === 'image') {
+            const nodes = byTag.fillable.get(key) || []
+            try { console.log('[SYNC] image nodes for tag', key, nodes.length) } catch {}
+            if (nodes.length > 0) {
+                try {
+                    const imagePaint = await createImagePaintFromUrl(String(value))
+                    for (const n of nodes) {
+                        try {
+                            const fills = (Array.isArray(n.fills) ? [...n.fills] : []) as Paint[]
+                            // replace all fills with image fill to keep simple
+                            n.fills = [imagePaint]
+                            updated++
+                        } catch { skipped++ }
+                    }
+                } catch (err) {
+                    try { console.error('[SYNC] image fetch failed for tag', key, err) } catch {}
+                    skipped += nodes.length
+                }
+            }
         }
     }
     return { updated, skipped, missing }
+}
+
+function toGoogleDriveDownloadUrl(url: string): string {
+    try {
+        const u = new URL(url)
+        if (u.host.includes('drive.google.com')) {
+            // formats: /file/d/FILE_ID/view or uc?id=FILE_ID
+            const m = u.pathname.match(/\/file\/d\/([^/]+)/)
+            const id = m ? m[1] : (u.searchParams.get('id') || '')
+            if (id) {
+                return `https://drive.google.com/uc?export=download&id=${id}`
+            }
+        }
+        return url
+    } catch { return url }
+}
+
+async function createImagePaintFromUrl(url: string): Promise<ImagePaint> {
+    const normalized = toGoogleDriveDownloadUrl(url)
+    try { console.log('[SYNC] fetch image', normalized) } catch {}
+    const buf = await fetchImageBytesViaUI(normalized)
+    const image = figma.createImage(buf)
+    const paint: ImagePaint = {
+        type: 'IMAGE',
+        imageHash: image.hash,
+        scaleMode: 'FILL',
+    }
+    try { console.log('[SYNC] image created hash', image.hash) } catch {}
+    return paint
+}
+
+function fetchImageBytesViaUI(url: string): Promise<Uint8Array> {
+    return new Promise((resolve, reject) => {
+        const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`
+        function onMsg(msg: any) {
+            if (msg.type === 'image/fetch:result' && msg.id === id) {
+                figma.ui.off('message', onMsg)
+                if (msg.ok && msg.buffer) {
+                    const buf = new Uint8Array(msg.buffer as ArrayBuffer)
+                    resolve(buf)
+                } else {
+                    reject(new Error(msg.error || 'fetch failed'))
+                }
+            }
+        }
+        figma.ui.on('message', onMsg)
+        figma.ui.postMessage({ type: 'image/fetch', id, url })
+    })
+}
+
+function collectEligibleLayers(root: SceneNode): Array<{ id: string; name: string; tag: string }> {
+    const result: Array<{ id: string; name: string; tag: string }> = []
+    function visit(n: SceneNode) {
+        const name = (n as any).name || ''
+        const tag = findTagFromName(name)
+        if (tag) {
+            result.push({ id: n.id, name, tag })
+        }
+        if ('children' in n) {
+            for (const c of n.children) visit(c as SceneNode)
+        }
+    }
+    visit(root)
+    return result
 }
 
 async function handleSyncText(payload: { sets: Array<{ tabTitle: string; headers: Array<{ key: string; label: string }>; rows: RowData[] }> }) {
@@ -222,5 +370,6 @@ async function handleSyncText(payload: { sets: Array<{ tabTitle: string; headers
         },
     })
 }
+
 
 

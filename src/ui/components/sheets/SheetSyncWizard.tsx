@@ -14,6 +14,7 @@ import { SourceStep } from "../steps/SourceStep"
 import { TabsStep } from "../steps/TabsStep"
 import { AuthStep } from "../steps/AuthStep"
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs"
+import { Pencil } from "lucide-react"
 import { ScrollArea } from "../ui/scroll-area"
 import { VerticalScrollAffordance } from "../vertical-scroll-affordance"
 // Virtualization
@@ -113,6 +114,8 @@ export function SheetSyncWizard(props: SheetSyncWizardProps) {
 	const [activeSheet, setActiveSheet] = React.useState<string | null>(null)
 	const [sheetCache, setSheetCache] = React.useState<Record<string, { headers: Array<{key:string;label:string}>, rows: RowData[] }>>({})
 	const [selectedTabs, setSelectedTabs] = React.useState<Set<string>>(new Set())
+	const [analyzeMode, setAnalyzeMode] = React.useState(false)
+	const [tabAnalyzeSelection, setTabAnalyzeSelection] = React.useState<Record<string, Record<string, boolean>>>({})
 
 	// Fetch profile if tokens exist but userinfo absent
 	async function fetchGoogleUserinfo(accessToken: string): Promise<{ email?: string; name?: string; picture?: string } | null> {
@@ -132,43 +135,86 @@ export function SheetSyncWizard(props: SheetSyncWizardProps) {
 		}
 	}
 
+	// Current tab key used by selection logic in columns
+	const currentSheetKey = (activeSheet ?? '__none__') as string
+
 	const columns = useMemo<ColumnDef<RowData>[]>(
 		() => [
 			{
 				id: "select",
-				header: ({ table }) => (
-					<Checkbox
-						checked={table.getIsAllPageRowsSelected() || (table.getIsSomePageRowsSelected() && "indeterminate")}
-						onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
-						aria-label="Select all"
-					/>
-				),
+				header: ({ table }) => {
+					if (analyzeMode) {
+						const sel = tabAnalyzeSelection[currentSheetKey] ?? {}
+						const pageRows = table.getRowModel().rows
+						const allChecked = pageRows.length > 0 && pageRows.every((r) => sel[r.id])
+						const someChecked = !allChecked && pageRows.some((r) => sel[r.id])
+						return (
+							<Checkbox
+								checked={allChecked || (someChecked && "indeterminate")}
+								onCheckedChange={(value) => {
+									setTabAnalyzeSelection((prev) => {
+										const cur = prev[currentSheetKey] ?? {}
+										const next = { ...cur }
+										if (value) pageRows.forEach((r) => { next[r.id] = true })
+										else pageRows.forEach((r) => { delete next[r.id] })
+										return { ...prev, [currentSheetKey]: next }
+									})
+								}}
+								aria-label="Select all"
+								className="data-[state=checked]:bg-orange-500 data-[state=checked]:border-orange-500"
+							/>
+						)
+					}
+					return (
+						<Checkbox
+							checked={table.getIsAllPageRowsSelected() || (table.getIsSomePageRowsSelected() && "indeterminate")}
+							onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
+							aria-label="Select all"
+						/>
+					)
+				},
 				cell: ({ row, table }) => (
 					<Checkbox
-						checked={row.getIsSelected()}
-						onPointerDown={(e) => {
-							// capture Shift pressed state before Radix toggles
-							shiftRef.current = e.shiftKey
-						}}
+						checked={analyzeMode ? !!(tabAnalyzeSelection[currentSheetKey]?.[row.id]) : row.getIsSelected()}
+						onPointerDown={(e) => { shiftRef.current = e.shiftKey }}
 						onCheckedChange={(value) => {
 							const rows = table.getRowModel().rows
 							const idx = rows.findIndex((r) => r.id === row.id)
-							if (shiftRef.current && lastIndexRef.current !== null && idx !== -1) {
-								const [a, b] = [lastIndexRef.current, idx].sort((x, y) => x - y)
-								const next = { ...(table.getState().rowSelection as Record<string, boolean>) }
-								const shouldSelect = !!value
-								for (let k = a; k <= b; k++) {
-									const id = rows[k].id
-									if (shouldSelect) next[id] = true
-									else delete next[id]
-								}
-								table.setRowSelection(next)
+							if (analyzeMode) {
+								setTabAnalyzeSelection((prev) => {
+									const tab = currentSheetKey
+									const cur = prev[tab] ?? {}
+									const next = { ...cur }
+									if (shiftRef.current && lastIndexRef.current !== null && idx !== -1) {
+										const [a, b] = [lastIndexRef.current, idx].sort((x, y) => x - y)
+										for (let k = a; k <= b; k++) {
+											const id = rows[k].id
+											if (value) next[id] = true; else delete next[id]
+										}
+									} else {
+										if (value) next[row.id] = true; else delete next[row.id]
+									}
+									return { ...prev, [tab]: next }
+								})
 							} else {
-								row.toggleSelected(!!value)
+								if (shiftRef.current && lastIndexRef.current !== null && idx !== -1) {
+									const [a, b] = [lastIndexRef.current, idx].sort((x, y) => x - y)
+									const next = { ...(table.getState().rowSelection as Record<string, boolean>) }
+									const shouldSelect = !!value
+									for (let k = a; k <= b; k++) {
+										const id = rows[k].id
+										if (shouldSelect) next[id] = true
+										else delete next[id]
+									}
+									table.setRowSelection(next)
+								} else {
+									row.toggleSelected(!!value)
+								}
 							}
 							lastIndexRef.current = idx
 						}}
 						aria-label={`Select ${row.id}`}
+						className={analyzeMode ? 'data-[state=checked]:bg-orange-500 data-[state=checked]:border-orange-500' : undefined}
 					/>
 				),
 				enableSorting: false,
@@ -176,10 +222,9 @@ export function SheetSyncWizard(props: SheetSyncWizardProps) {
 			},
 			...headers.map((h) => ({ accessorKey: h.key, header: h.label } as ColumnDef<RowData>)),
 		],
-		[headers],
+		[headers, analyzeMode, tabAnalyzeSelection, currentSheetKey],
 	)
 
-	const currentSheetKey = (activeSheet ?? '__none__') as string
 	const currentRowSelection = tabRowSelection[currentSheetKey] ?? {}
 
 	const table = useReactTable({
@@ -415,6 +460,81 @@ export function SheetSyncWizard(props: SheetSyncWizardProps) {
 		setUiStep('table')
 	}
 
+	// Handle main requests for image fetch proxy via UI (browser fetch supports more sources)
+	React.useEffect(() => {
+		function onMessage(e: MessageEvent) {
+			const msg = (e.data && e.data.pluginMessage) || e.data
+			if (msg?.type === 'image/fetch') {
+				const { id, url } = msg
+				;(async () => {
+					try {
+						console.debug('[UI] image/fetch start', url)
+						// Try Google Drive API if we can extract a Drive fileId
+						const extractDriveFileId = (u: string): string | null => {
+							try {
+								const parsed = new URL(u)
+								const host = parsed.hostname
+								if (host.includes('drive.google.com')) {
+									// /file/d/<id>/...
+									const m = parsed.pathname.match(/\/file\/d\/([^/]+)/)
+									if (m && m[1]) return m[1]
+									// open?id= or uc?id=
+									const qid = parsed.searchParams.get('id')
+									if (qid) return qid
+								}
+								// Already normalized form uc?export=download&id=
+								if (parsed.searchParams.get('export') === 'download') {
+									const qid = parsed.searchParams.get('id')
+									if (qid) return qid
+								}
+							} catch {}
+							return null
+						}
+						const fileId = extractDriveFileId(url)
+						if (fileId) {
+							// Ask main for token
+							parent.postMessage({ pluginMessage: { type: 'oauth/get' } }, '*')
+							const token = await new Promise<any>((resolve) => {
+								function onTok(e2: MessageEvent) {
+									const m2 = (e2.data && e2.data.pluginMessage) || e2.data
+									if (m2?.type === 'oauth/token') {
+										window.removeEventListener('message', onTok)
+										resolve(m2.token)
+									}
+								}
+								window.addEventListener('message', onTok)
+							})
+							if (token?.access_token) {
+								const driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`
+								const r = await fetch(driveUrl, { headers: { Authorization: `Bearer ${token.access_token}` } })
+								if (r.ok) {
+									const buf = await r.arrayBuffer()
+									console.debug('[UI] image/fetch ok (drive api)', fileId, buf.byteLength)
+									parent.postMessage({ pluginMessage: { type: 'image/fetch:result', id, ok: true, buffer: buf } }, '*')
+									return
+								} else {
+									console.warn('[UI] drive api fetch not ok', fileId, r.status)
+								}
+							}
+						}
+						// Fallback: use backend proxy for everything else
+						const proxyUrl = `https://google-sheet-sync-api.vercel.app/api/proxy?url=${encodeURIComponent(url)}`
+						const res = await fetch(proxyUrl)
+						if (!res.ok) throw new Error(String(res.status))
+						const buf = await res.arrayBuffer()
+						console.debug('[UI] image/fetch ok', url, buf.byteLength)
+						parent.postMessage({ pluginMessage: { type: 'image/fetch:result', id, ok: true, buffer: buf } }, '*')
+					} catch (error) {
+						console.warn('[UI] image/fetch fail', url, error)
+						parent.postMessage({ pluginMessage: { type: 'image/fetch:result', id, ok: false, error: String(error) } }, '*')
+					}
+				})()
+			}
+		}
+		window.addEventListener('message', onMessage)
+		return () => window.removeEventListener('message', onMessage)
+	}, [])
+
 	async function loadActiveSheet(title: string) {
 		const cached = sheetCache[title]
 		if (cached) {
@@ -494,6 +614,17 @@ export function SheetSyncWizard(props: SheetSyncWizardProps) {
 								<div className="min-w-max">
 									<div className="flex items-center justify-between mb-1">
 										<Button size="sm" variant="outline" onClick={()=>setUiStep('tabs')}>Back</Button>
+										<div className="flex items-center gap-2">
+											<button
+												className={"inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors " + (analyzeMode ? 'bg-orange-50 border-orange-400 text-orange-600' : 'border-input text-foreground')}
+												onClick={() => setAnalyzeMode((v)=>!v)}
+												aria-pressed={analyzeMode}
+												title="Mark for analyze"
+											>
+												<Pencil className="h-3.5 w-3.5" />
+												<span>{analyzeMode ? 'Analyze mode' : 'Mark for analyze'}</span>
+											</button>
+										</div>
 									</div>
 									<Tabs value={activeSheet} onValueChange={(v)=>{ setActiveSheet(v); loadActiveSheet(v) }}>
 										<TabsList className="p-0">
@@ -587,7 +718,7 @@ export function SheetSyncWizard(props: SheetSyncWizardProps) {
 							}}
 							disabled={totalSelectedCount === 0}
 						>
-							Sync text
+							Sync
 						</Button>
 						<Button
 							size="sm"
