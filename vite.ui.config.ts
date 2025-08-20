@@ -21,7 +21,7 @@ export default defineConfig({
 				assetFileNames: 'ui.[ext]',
 			},
 		},
-		target: 'es2018',
+		target: 'es2017',
 	},
 })
 

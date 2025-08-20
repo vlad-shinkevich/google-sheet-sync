@@ -17,7 +17,7 @@ export default defineConfig({
 				entryFileNames: 'code.js',
 			},
 		},
-		target: 'es2018',
+		target: 'es2017',
 		minify: true,
 	},
 })

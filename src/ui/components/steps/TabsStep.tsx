@@ -19,7 +19,7 @@ export function TabsStep({ sheets, selectedTabs, loading, onBack, onNext, onTogg
 				<div className="text-sm">Select tabs to load</div>
 				<div className="flex items-center gap-2">
 					<Button size="sm" variant="outline" onClick={onBack}>Back</Button>
-					<Button size="sm" onClick={onNext} disabled={selectedTabs.size === 0 || loading}>{loading ? 'Loading…' : 'Next'}</Button>
+					<Button size="sm" onClick={onNext} disabled={selectedTabs.size === 0 || loading}>{loading ? 'Loading...' : 'Next'}</Button>
 				</div>
 			</div>
 			<div className="flex flex-wrap gap-2">

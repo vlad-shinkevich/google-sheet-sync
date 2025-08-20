@@ -18,7 +18,7 @@ export function SourceStep({ sheetUrl, loading, onChangeUrl, onConnect, onLoad, 
 			<div className="text-sm text-muted-foreground">Google Sheet</div>
 			<div className="flex items-center gap-2">
 				<Input placeholder="Paste Google Sheet URL" value={sheetUrl} onChange={(e)=>onChangeUrl(e.target.value)} className="w-[340px]" />
-				<Button size="sm" variant="outline" onClick={onLoad} disabled={loading}>{loading ? 'Loading…' : 'Load'}</Button>
+				<Button size="sm" variant="outline" onClick={onLoad} disabled={loading}>{loading ? 'Loading...' : 'Load'}</Button>
 				{userinfo?.email ? (
 					<span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
 						{userinfo.picture && <img src={userinfo.picture} alt="avatar" className="w-4 h-4 rounded-full" />}
