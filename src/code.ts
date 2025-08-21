@@ -6,6 +6,12 @@
 // Load built UI HTML directly and pass to showUI
 // Note: This depends on UI being built first (our scripts do build:ui before build:code)
 import uiHtml from '../dist/src/ui/ui.html?raw'
+// Utilities extracted to dedicated modules
+import { normalizeKey, findTagFromName, collectNodesByTag } from './lib/figma/layers'
+import { loadAllFontsInNode } from './lib/figma/text'
+import { parseSolidPaintFromColor } from './lib/figma/colors'
+import { createImagePaintFromUrl, fetchImageBytesViaUI, toGoogleDriveDownloadUrl } from './lib/figma/images'
+import { parseVariantAssignments, setInstanceVariants } from './lib/figma/variants'
 
 // Show UI with fallback to minimal HTML if embedded UI fails to parse
 const uiSize = { width: 640, height: 420 }
@@ -79,14 +85,7 @@ figma.ui.onmessage = (msg) => {
 
 type RowData = Record<string, string>
 
-function normalizeKey(s: string): string {
-    return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_')
-}
-
-function findTagFromName(name: string): string | null {
-    const m = name.match(/#([a-z0-9_]+)/i)
-    return m ? normalizeKey(m[1]) : null
-}
+// moved to ./lib/figma/layers
 
 function detectFieldType(value: string, tagKey?: string): 'image' | 'link' | 'text' | 'color' | 'variant' {
     const v = String(value || '').trim()
@@ -112,75 +111,13 @@ function detectFieldType(value: string, tagKey?: string): 'image' | 'link' | 'te
     }
 }
 
-type NodesByTag = {
-    text: Map<string, TextNode[]>
-    fillable: Map<string, (SceneNode & { fills: readonly Paint[] | PluginAPI['mixed']; })[]>
-    instances: Map<string, InstanceNode[]>
-}
+// moved to ./lib/figma/layers (NodesByTag internal)
 
-function isInstanceNode(n: SceneNode): n is InstanceNode {
-    const anyN = n as any
-    return (
-        anyN &&
-        typeof anyN.getMainComponentAsync === 'function' &&
-        typeof anyN.setProperties === 'function' &&
-        'variantProperties' in anyN
-    )
-}
+// moved to ./lib/figma/layers
 
-function collectNodesByTag(node: SceneNode): NodesByTag {
-    const text = new Map<string, TextNode[]>()
-    const fillable = new Map<string, (SceneNode & { fills: readonly Paint[] | PluginAPI['mixed']; })[]>()
-    const instances = new Map<string, InstanceNode[]>()
-    function visit(n: SceneNode) {
-        const tag = findTagFromName((n as any).name || '')
-        if (n.type === 'TEXT') {
-            if (tag) {
-                const arr = text.get(tag) || []
-                arr.push(n as TextNode)
-                text.set(tag, arr)
-            }
-        } else if (isInstanceNode(n)) {
-            if (tag) {
-                const arr = instances.get(tag) || []
-                arr.push(n)
-                instances.set(tag, arr)
-            }
-        } else if ('fills' in n) {
-            if (tag) {
-                const arr = fillable.get(tag) || []
-                arr.push(n as any)
-                fillable.set(tag, arr)
-            }
-        }
-        if ('children' in n) {
-            for (const c of n.children) visit(c as SceneNode)
-        }
-    }
-    visit(node)
-    return { text, fillable, instances }
-}
+// moved to ./lib/figma/layers
 
-async function loadAllFontsInNode(textNode: TextNode): Promise<void> {
-    const len = textNode.characters.length
-    if (len === 0) return
-    if (textNode.fontName !== figma.mixed) {
-        await figma.loadFontAsync(textNode.fontName as FontName)
-        return
-    }
-    let i = 0
-    while (i < len) {
-        const font = textNode.getRangeFontName(i, i + 1) as FontName
-        await figma.loadFontAsync(font)
-        let j = i + 1
-        while (j < len) {
-            const f2 = textNode.getRangeFontName(j, j + 1) as FontName
-            if (f2.family !== font.family || f2.style !== font.style) break
-            j++
-        }
-        i = j
-    }
-}
+// moved to ./lib/figma/text
 
 async function applyRowToClone(clone: SceneNode, row: RowData): Promise<{ updated: number; skipped: number; missing: string[] }> {
     let updated = 0
@@ -191,7 +128,6 @@ async function applyRowToClone(clone: SceneNode, row: RowData): Promise<{ update
         ...byTag.text.keys(),
         ...byTag.fillable.keys(),
         ...byTag.instances.keys(),
-        ...(byTag as any).groups ? [...(byTag as any).groups.keys()] : [],
     ])
     try { console.log('[SYNC] tags found:', Array.from(allTags)) } catch {}
     try { console.log('[SYNC] row keys:', Object.keys(row)) } catch {}
@@ -266,16 +202,6 @@ async function applyRowToClone(clone: SceneNode, row: RowData): Promise<{ update
             } else if (!paint) {
                 skipped += nodes.length
             }
-            // If color tag is on a GROUP, apply to all children with fills
-            const groups = (byTag as any).groups ? ((byTag as any).groups.get(key) || []) : []
-            try { console.log('[SYNC] color groups for tag', key, groups.length) } catch {}
-            if (paint && groups.length > 0) {
-                for (const g of groups as GroupNode[]) {
-                    const u = applyFillToGroupChildren(g, paint)
-                    updated += u
-                    try { console.log('[SYNC] applied color to group children count', u) } catch {}
-                }
-            }
         }
         // Update instances (variants) if applicable
         if (type === 'variant') {
@@ -294,212 +220,28 @@ async function applyRowToClone(clone: SceneNode, row: RowData): Promise<{ update
     return { updated, skipped, missing }
 }
 
-function parseSolidPaintFromColor(input: string): SolidPaint | null {
-    const s = String(input).trim()
-    const m = s.match(/^#([0-9a-f]{1,8})$/i)
-    if (!m) return null
-    let hex = m[1]
-    function hexTo01(hh: string): number { return parseInt(hh, 16) / 255 }
-    let r = 0, g = 0, b = 0, a = 1
-    if (hex.length === 1) {
-        // #A -> #AAAAAA
-        const c = hex[0]
-        r = hexTo01(c + c)
-        g = hexTo01(c + c)
-        b = hexTo01(c + c)
-    } else if (hex.length === 2) {
-        // #AB -> grayscale using A, alpha from B? Spec says map to #AABBCC; but examples show #AB -> #ABABAB
-        // Following provided spec: #AB -> #ABABAB
-        const c1 = hex[0]
-        const c2 = hex[1]
-        r = hexTo01(c1 + c2)
-        g = hexTo01(c1 + c2)
-        b = hexTo01(c1 + c2)
-    } else if (hex.length === 3) {
-        r = hexTo01(hex[0] + hex[0])
-        g = hexTo01(hex[1] + hex[1])
-        b = hexTo01(hex[2] + hex[2])
-    } else if (hex.length === 6) {
-        r = hexTo01(hex.slice(0,2))
-        g = hexTo01(hex.slice(2,4))
-        b = hexTo01(hex.slice(4,6))
-    } else if (hex.length === 8) {
-        r = hexTo01(hex.slice(0,2))
-        g = hexTo01(hex.slice(2,4))
-        b = hexTo01(hex.slice(4,6))
-        a = hexTo01(hex.slice(6,8))
-    } else {
-        return null
-    }
-    const paint: SolidPaint = { type: 'SOLID', color: { r, g, b }, opacity: a }
-    return paint
-}
+// moved to ./lib/figma/colors
 
-function applyFillToGroupChildren(group: GroupNode, paint: SolidPaint): number {
-    let updated = 0
-    function visit(n: SceneNode) {
-        if ('fills' in n) {
-            try { (n as any).fills = [paint]; updated++ } catch {}
-        }
-        if ('children' in n) {
-            for (const c of n.children) visit(c as SceneNode)
-        }
-    }
-    for (const c of group.children) visit(c as SceneNode)
-    return updated
-}
+// group color support removed per spec
 
-function parseVariantAssignments(input: string): Record<string, string> | { __valueOnly: string } {
-    const raw = String(input).trim()
-    const parts = raw.split(/\s*[|,]\s*/).filter(Boolean)
-    const map: Record<string, string> = {}
-    let valueOnly: string | null = null
-    for (const p of parts) {
-        const eq = p.indexOf('=')
-        if (eq > -1) {
-            const k = p.slice(0, eq).trim()
-            const v = p.slice(eq + 1).trim()
-            if (k && v) map[k] = v
-        } else {
-            // Single value (no prop); remember first
-            if (!valueOnly) valueOnly = p.trim()
-        }
-    }
-    if (Object.keys(map).length > 0) return map
-    if (valueOnly) return { __valueOnly: valueOnly }
-    return {}
-}
+// moved to ./lib/figma/variants
 
-async function setInstanceVariants(instance: InstanceNode, assignment: Record<string, string> | { __valueOnly: string }) {
-    let main: ComponentNode | null = null
-    try { main = await instance.getMainComponentAsync() } catch { main = null }
-    if (!main) return
-    const props = (main as any).variantProperties as Record<string, string> | undefined
-    if (!props || Object.keys(props).length === 0) return
-    const propsSafe = props as Record<string, string>
-    const current = instance.variantProperties || {}
-    const next: { [key: string]: string } = { ...current }
+// moved to ./lib/figma/variants
 
-    // Collect canonical prop names and all possible values from the component set
-    const propNameMapCI = new Map<string, string>()
-    const propValuesMapCI = new Map<string, Map<string, string>>()
-    for (const propName of Object.keys(props)) {
-        propNameMapCI.set(propName.toLowerCase(), propName)
-        propValuesMapCI.set(propName, new Map<string, string>())
-    }
-    const parent = (main as any).parent
-    if (parent && 'children' in parent) {
-        for (const child of parent.children as readonly SceneNode[]) {
-            const comp = child as any
-            if (comp && comp.type === 'COMPONENT' && comp.variantProperties) {
-                const vp = comp.variantProperties as Record<string, string>
-                for (const [k, v] of Object.entries(vp)) {
-                    if (!propNameMapCI.has(k.toLowerCase())) propNameMapCI.set(k.toLowerCase(), k)
-                    const vm = propValuesMapCI.get(propNameMapCI.get(k.toLowerCase())!) || new Map<string, string>()
-                    vm.set(String(v).toLowerCase(), String(v))
-                    propValuesMapCI.set(propNameMapCI.get(k.toLowerCase())!, vm)
-                }
-            }
-        }
-    }
-    try {
-        console.log('[VARIANT] available props', Array.from(propNameMapCI.values()))
-        const options: Record<string, string[]> = {}
-        propValuesMapCI.forEach((vm, k) => { options[k] = Array.from(vm.values()) })
-        console.log('[VARIANT] available values', options)
-    } catch {}
+// moved to ./lib/figma/images
 
-    function resolvePropNameCI(input: string): string | null {
-        const exact = propsSafe[input] ? input : null
-        if (exact) return exact
-        const lower = input.toLowerCase()
-        return propNameMapCI.get(lower) || null
-    }
-    function resolvePropValueCI(propCanonical: string, input: string): string {
-        const vm = propValuesMapCI.get(propCanonical)
-        if (!vm || vm.size === 0) return input
-        const exact = vm.get(input)
-        if (exact) return exact
-        const lower = input.toLowerCase()
-        return vm.get(lower) || input
-    }
+// moved to ./lib/figma/images
 
-    if ('__valueOnly' in assignment) {
-        const rawVal = (assignment as any).__valueOnly as string
-        const firstKey = Object.keys(props)[0]
-        if (firstKey) next[firstKey] = resolvePropValueCI(firstKey, rawVal)
-    } else {
-        for (const [rawK, rawV] of Object.entries(assignment)) {
-            const canonical = resolvePropNameCI(rawK)
-            if (!canonical) { try { console.warn('[VARIANT] unknown prop', rawK) } catch {}; continue }
-            const resolvedVal = resolvePropValueCI(canonical, rawV)
-            next[canonical] = resolvedVal
-            try { console.log('[VARIANT] set', canonical, '=>', resolvedVal) } catch {}
-        }
-    }
-    try { console.log('[VARIANT] current', current, 'next', next) } catch {}
-    try { instance.setProperties(next) } catch (e) { try { console.error('[VARIANT] setProperties error', e) } catch {} }
-}
+// moved to ./lib/figma/images
 
-function toGoogleDriveDownloadUrl(url: string): string {
-    try {
-        const u = new URL(url)
-        if (u.host.includes('drive.google.com')) {
-            // formats: /file/d/FILE_ID/view or uc?id=FILE_ID
-            const m = u.pathname.match(/\/file\/d\/([^/]+)/)
-            const id = m ? m[1] : (u.searchParams.get('id') || '')
-            if (id) {
-                return `https://drive.google.com/uc?export=download&id=${id}`
-            }
-        }
-        return url
-    } catch { return url }
-}
-
-async function createImagePaintFromUrl(url: string): Promise<ImagePaint> {
-    const normalized = toGoogleDriveDownloadUrl(url)
-    try { console.log('[SYNC] fetch image', normalized) } catch {}
-    const buf = await fetchImageBytesViaUI(normalized)
-    const image = figma.createImage(buf)
-    const paint: ImagePaint = {
-        type: 'IMAGE',
-        imageHash: image.hash,
-        scaleMode: 'FILL',
-    }
-    try { console.log('[SYNC] image created hash', image.hash) } catch {}
-    return paint
-}
-
-function fetchImageBytesViaUI(url: string): Promise<Uint8Array> {
-    return new Promise((resolve, reject) => {
-        const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`
-        function onMsg(msg: any) {
-            if (msg.type === 'image/fetch:result' && msg.id === id) {
-                figma.ui.off('message', onMsg)
-                if (msg.ok && msg.buffer) {
-                    const buf = new Uint8Array(msg.buffer as ArrayBuffer)
-                    resolve(buf)
-                } else {
-                    reject(new Error(msg.error || 'fetch failed'))
-                }
-            }
-        }
-        figma.ui.on('message', onMsg)
-        figma.ui.postMessage({ type: 'image/fetch', id, url })
-    })
-}
-
+// keep local helper using imported findTagFromName
 function collectEligibleLayers(root: SceneNode): Array<{ id: string; name: string; tag: string }> {
     const result: Array<{ id: string; name: string; tag: string }> = []
     function visit(n: SceneNode) {
         const name = (n as any).name || ''
         const tag = findTagFromName(name)
-        if (tag) {
-            result.push({ id: n.id, name, tag })
-        }
-        if ('children' in n) {
-            for (const c of n.children) visit(c as SceneNode)
-        }
+        if (tag) result.push({ id: n.id, name, tag })
+        if ('children' in n) for (const c of n.children) visit(c as SceneNode)
     }
     visit(root)
     return result
