@@ -11,7 +11,8 @@ import { findTagFromName, collectNodesByTag } from './lib/figma/layers'
 import { loadAllFontsInNode } from './lib/figma/text'
 import { parseSolidPaintFromColor } from './lib/figma/colors'
 import { createImagePaintFromUrl } from './lib/figma/images'
-import { parseVariantAssignments, setInstanceVariants } from './lib/figma/variants'
+import { parseVariantAssignments, setInstanceVariants, setInstanceVariantsStrict } from './lib/figma/variants'
+import { findMainComponentByNameInScope } from './lib/figma/components'
 import { isSpecialPrefixed, stripSpecialPrefix, getVisibilityAction } from './lib/figma/special'
 
 // Show UI with fallback to minimal HTML if embedded UI fails to parse
@@ -219,19 +220,26 @@ async function applyRowToClone(clone: SceneNode, row: RowData): Promise<{ update
                 skipped += nodes.length
             }
         }
-        // Update instances (variants) if applicable
-        if (type === 'variant') {
+        // Update instances for components and variants
+        if (byTag.instances.has(key)) {
             const instances = byTag.instances.get(key) || []
             if (instances.length > 0) {
                 const raw = String(value)
-                // For instances, require '/' for special variant assignment
-                if (!isSpecialPrefixed(raw)) {
-                    skipped += instances.length
-                } else {
+                if (isSpecialPrefixed(raw)) {
+                    // Variant by exact order and full set as in reference
                     const stripped = stripSpecialPrefix(raw)
-                    const assignments = parseVariantAssignments(stripped)
                     for (const inst of instances) {
-                        try { await setInstanceVariants(inst, assignments); updated++ } catch { skipped++ }
+                        try { await setInstanceVariantsStrict(inst, stripped); updated++ } catch { skipped++ }
+                    }
+                } else {
+                    // Component swap by main component name
+                    // Scope: current page (practically similar to reference's search area constraints)
+                    const main = findMainComponentByNameInScope(figma.currentPage as any, raw)
+                    if (!main) { skipped += instances.length }
+                    else {
+                        for (const inst of instances) {
+                            try { inst.swapComponent(main); updated++ } catch { skipped++ }
+                        }
                     }
                 }
             }

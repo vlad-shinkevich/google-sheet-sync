@@ -48,3 +48,52 @@ export async function setInstanceVariants(instance: InstanceNode, assignment: Re
 }
 
 
+export async function setInstanceVariantsStrict(instance: InstanceNode, raw: string) {
+  let main: ComponentNode | null = null
+  try { main = await instance.getMainComponentAsync() } catch { main = null }
+  if (!main) return
+  const props = (main as any).variantProperties as Record<string, string> | undefined
+  if (!props || Object.keys(props).length === 0) return
+  const expectedOrder = Object.keys(props)
+
+  // Parse raw by commas, preserve order and exact keys
+  const parts = String(raw).split(/\s*,\s*/).filter(Boolean)
+  if (parts.length !== expectedOrder.length) return
+  const ordered: Array<{ key: string; value: string }> = []
+  for (let i = 0; i < parts.length; i++) {
+    const seg = parts[i]
+    const eq = seg.indexOf('=')
+    if (eq < 0) return
+    const k = seg.slice(0, eq).trim()
+    const v = seg.slice(eq + 1).trim()
+    if (!k || !v) return
+    // enforce exact key and order
+    if (k !== expectedOrder[i]) return
+    ordered.push({ key: k, value: v })
+  }
+  // Build value map for exact values present in component set
+  const propValuesExact = new Map<string, Set<string>>()
+  expectedOrder.forEach((p) => propValuesExact.set(p, new Set<string>()))
+  const parent = (main as any).parent
+  if (parent && 'children' in parent) {
+    for (const child of parent.children as readonly SceneNode[]) {
+      const comp = child as any
+      if (comp && comp.type === 'COMPONENT' && comp.variantProperties) {
+        const vp = comp.variantProperties as Record<string, string>
+        for (const [k, v] of Object.entries(vp)) {
+          if (!propValuesExact.has(k)) propValuesExact.set(k, new Set<string>())
+          propValuesExact.get(k)!.add(String(v))
+        }
+      }
+    }
+  }
+  const next: { [key: string]: string } = {}
+  for (const { key, value } of ordered) {
+    const allowed = propValuesExact.get(key)
+    if (!allowed || !allowed.has(value)) return
+    next[key] = value
+  }
+  try { instance.setProperties(next) } catch {}
+}
+
+

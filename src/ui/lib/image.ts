@@ -51,23 +51,3 @@ export function attachImageFetchHandler(active: boolean) {
   if (active) window.addEventListener('message', onMessage)
   return () => window.removeEventListener('message', onMessage)
 }
-
-function extractDriveFileId(u: string): string | null {
-  try {
-    const parsed = new URL(u)
-    const host = parsed.hostname
-    if (host.includes('drive.google.com')) {
-      const m = parsed.pathname.match(/\/file\/d\/([^/]+)/)
-      if (m && m[1]) return m[1]
-      const qid = parsed.searchParams.get('id')
-      if (qid) return qid
-    }
-    if (parsed.searchParams.get('export') === 'download') {
-      const qid = parsed.searchParams.get('id')
-      if (qid) return qid
-    }
-  } catch {}
-  return null
-}
-
-
