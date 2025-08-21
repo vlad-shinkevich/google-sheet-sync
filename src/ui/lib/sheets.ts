@@ -1,4 +1,5 @@
 import type { RowData } from '@/ui/types'
+import { fetchGoogleJson } from '@/ui/lib/api'
 
 export function parseSheetId(url: string): string | null {
   const m = url.match(/spreadsheets\/d\/([a-zA-Z0-9-_]+)/)
@@ -6,19 +7,17 @@ export function parseSheetId(url: string): string | null {
 }
 
 export async function fetchSheetMeta(sheetId: string, accessToken: string): Promise<Array<{ id: number; title: string }>> {
-  const meta = await fetch(
+  const meta = await fetchGoogleJson<any>(
     `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets(properties(sheetId,title,index))`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  ).then(r=>r.json()).catch(()=>null as any)
+    accessToken
+  )
   const list = (meta?.sheets ?? []).map((s:any)=>({ id: s.properties.sheetId, title: s.properties.title }))
   return list
 }
 
 export async function fetchValuesFor(sheetId: string, accessToken: string, sheetTitle: string): Promise<{ headers: Array<{ key: string; label: string }>; rows: RowData[] }> {
   const rangeTitle = `'${sheetTitle}'!A1:Z10000`
-  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(rangeTitle)}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  }).then(r=>r.json()).catch(()=>null)
+  const res = await fetchGoogleJson<any>(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(rangeTitle)}`, accessToken)
   const values: string[][] = res?.values ?? []
   const maxCols = values.reduce((m, r) => Math.max(m, r?.length ?? 0), 0)
   const headerRow = values[0] ?? []

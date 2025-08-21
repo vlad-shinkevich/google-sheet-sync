@@ -7,10 +7,10 @@
 // Note: This depends on UI being built first (our scripts do build:ui before build:code)
 import uiHtml from '../dist/src/ui/ui.html?raw'
 // Utilities extracted to dedicated modules
-import { normalizeKey, findTagFromName, collectNodesByTag } from './lib/figma/layers'
+import { findTagFromName, collectNodesByTag } from './lib/figma/layers'
 import { loadAllFontsInNode } from './lib/figma/text'
 import { parseSolidPaintFromColor } from './lib/figma/colors'
-import { createImagePaintFromUrl, fetchImageBytesViaUI, toGoogleDriveDownloadUrl } from './lib/figma/images'
+import { createImagePaintFromUrl } from './lib/figma/images'
 import { parseVariantAssignments, setInstanceVariants } from './lib/figma/variants'
 
 // Show UI with fallback to minimal HTML if embedded UI fails to parse

@@ -1,3 +1,5 @@
+import { extractDriveFileId, fetchGoogle, fetchGoogleDriveBytes, fetchProxyBytes } from '@/ui/lib/api'
+
 export function attachImageFetchHandler(active: boolean) {
   function onMessage(e: MessageEvent) {
     const msg = (e.data && (e as any).data.pluginMessage) || (e as any).data
@@ -20,45 +22,26 @@ export function attachImageFetchHandler(active: boolean) {
             window.addEventListener('message', onTok)
           })
           if (token?.access_token) {
-            const metaUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?fields=thumbnailLink,mimeType`
-            const metaRes = await fetch(metaUrl, { headers: { Authorization: `Bearer ${token.access_token}` } })
-            if (metaRes.ok) {
-              const meta = await metaRes.json()
-              const mime = String(meta?.mimeType || '')
-              const thumb = String(meta?.thumbnailLink || '')
-              if (mime.startsWith('image/')) {
-                const driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`
-                const r = await fetch(driveUrl, { headers: { Authorization: `Bearer ${token.access_token}` } })
-                if (r.ok) {
-                  const buf = await r.arrayBuffer()
-                  ;(parent as any).postMessage({ pluginMessage: { type: 'image/fetch:result', id, ok: true, buffer: buf } }, '*')
-                  return
-                }
-              } else if (thumb) {
-                const proxiedThumb = `https://google-sheet-sync-api.vercel.app/api/proxy?url=${encodeURIComponent(thumb)}`
-                const rt = await fetch(proxiedThumb)
-                if (rt.ok) {
-                  const buf = await rt.arrayBuffer()
-                  ;(parent as any).postMessage({ pluginMessage: { type: 'image/fetch:result', id, ok: true, buffer: buf } }, '*')
-                  return
-                }
-              }
-            }
-            // Fallback to original media via Drive
-            const driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`
-            const r = await fetch(driveUrl, { headers: { Authorization: `Bearer ${token.access_token}` } })
-            if (r.ok) {
-              const buf = await r.arrayBuffer()
+            const meta = await fetchGoogle<any>(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=thumbnailLink,mimeType`, token.access_token).catch(()=>null)
+            const mime = String(meta?.mimeType || '')
+            const thumb = String(meta?.thumbnailLink || '')
+            if (mime.startsWith('image/')) {
+              const buf = await fetchGoogleDriveBytes(fileId, token.access_token)
+              ;(parent as any).postMessage({ pluginMessage: { type: 'image/fetch:result', id, ok: true, buffer: buf } }, '*')
+              return
+            } else if (thumb) {
+              const buf = await fetchProxyBytes(thumb)
               ;(parent as any).postMessage({ pluginMessage: { type: 'image/fetch:result', id, ok: true, buffer: buf } }, '*')
               return
             }
+            // Fallback to original media via Drive
+            const buf = await fetchGoogleDriveBytes(fileId, token.access_token)
+            ;(parent as any).postMessage({ pluginMessage: { type: 'image/fetch:result', id, ok: true, buffer: buf } }, '*')
+            return
           }
         }
         // Fallback: backend proxy
-        const proxyUrl = `https://google-sheet-sync-api.vercel.app/api/proxy?url=${encodeURIComponent(url)}`
-        const res = await fetch(proxyUrl)
-        if (!res.ok) throw new Error(String(res.status))
-        const buf = await res.arrayBuffer()
+        const buf = await fetchProxyBytes(url)
         ;(parent as any).postMessage({ pluginMessage: { type: 'image/fetch:result', id, ok: true, buffer: buf } }, '*')
       } catch (error) {
         ;(parent as any).postMessage({ pluginMessage: { type: 'image/fetch:result', id, ok: false, error: String(error) } }, '*')

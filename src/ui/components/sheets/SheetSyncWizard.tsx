@@ -8,6 +8,7 @@ import { attachImageFetchHandler } from '@/ui/lib/image'
 import { TableStep } from '../steps/TableStep/TableStep'
 import type { RowData, ConfirmPayload } from '@/ui/types'
 import { uiLog } from '@/ui/lib/log'
+import { fetchOAuthStart, fetchOAuthPoll } from '@/ui/lib/api'
 import { getStoredAuth } from '@/ui/lib/oauth'
 
 
@@ -81,13 +82,13 @@ export function SheetSyncWizard(props: SheetSyncWizardProps) {
 	async function startOAuth() {
 		uiLog('oauth/start')
 		if (pollTimerRef.current !== null) { window.clearInterval(pollTimerRef.current); pollTimerRef.current = null }
-		const r = await fetch('https://google-sheet-sync-api.vercel.app/api/oauth/start').then(r=>r.json())
+		const r = await fetchOAuthStart()
 		setSessionId(r.sessionId)
 		parent.postMessage({ pluginMessage: { type: 'oauth/open', url: r.url } }, '*')
 		const mySession = r.sessionId as string
 		pollTimerRef.current = window.setInterval(async () => {
 			try {
-				const polled = await fetch(`https://google-sheet-sync-api.vercel.app/api/oauth/poll?sessionId=${mySession}`).then(r=>r.json()).catch(()=>null)
+				const polled = await fetchOAuthPoll(mySession).catch(()=>null)
 				if (polled?.done && polled?.result?.tokens) {
 					uiLog({ receive: 'oauth/poll final', hasTokens: true, hasUser: !!polled.result.userinfo?.email }, true)
 					parent.postMessage({ pluginMessage: { type: 'oauth/save', token: polled.result.tokens, userinfo: polled.result.userinfo } }, '*')
