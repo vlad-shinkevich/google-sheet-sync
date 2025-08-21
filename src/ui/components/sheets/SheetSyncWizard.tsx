@@ -8,7 +8,7 @@ import { attachImageFetchHandler } from '@/ui/lib/image'
 import { TableStep } from '../steps/TableStep/TableStep'
 import type { RowData, ConfirmPayload } from '@/ui/types'
 import { uiLog } from '@/ui/lib/log'
-import { fetchOAuthStart, fetchOAuthPoll } from '@/ui/lib/api'
+import { fetchOAuthStart, fetchOAuthPoll, fetchTokenInfo, fetchUserinfo } from '@/ui/lib/api'
 import { getStoredAuth } from '@/ui/lib/oauth'
 
 
@@ -33,10 +33,8 @@ export function SheetSyncWizard(props: SheetSyncWizardProps) {
 				const accessToken = token?.access_token
 				if (savedUserinfo && !cancelled) setUserinfo(savedUserinfo)
 				if (!accessToken) { if (!cancelled) setUiStep('auth'); return }
-				try {
-					const resp = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`)
-					if (resp.status !== 200) { uiLog({ tokeninfo: resp.status }, true); if (!cancelled) setUiStep('auth'); return }
-				} catch (err) { uiLog({ error: 'tokeninfo request failed', err }, true); if (!cancelled) setUiStep('auth'); return }
+				const status = await fetchTokenInfo(accessToken)
+				if (status !== 200) { uiLog({ tokeninfo: status }, true); if (!cancelled) setUiStep('auth'); return }
 				if (!cancelled) setUiStep('source')
 			} catch (e) { uiLog({ error: 'mount oauth/get flow failed', e }, true); if (!cancelled) setUiStep('auth') }
 		}
@@ -55,15 +53,7 @@ export function SheetSyncWizard(props: SheetSyncWizardProps) {
 	const [analyzeMode, setAnalyzeMode] = React.useState(false)
 	const [tabAnalyzeSelection, setTabAnalyzeSelection] = React.useState<Record<string, Record<string, boolean>>>({})
 
-	async function fetchGoogleUserinfo(accessToken: string): Promise<{ email?: string; name?: string; picture?: string } | null> {
-		try {
-			const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${accessToken}` } })
-			if (res.status === 401) { uiLog('userinfo 401 (ignoring, continue with token-only)', true); return null }
-			if (!res.ok) return null
-			const u = await res.json()
-			return { email: u.email, name: u.name, picture: u.picture }
-		} catch { return null }
-	}
+	// userinfo fetch moved to api.ts (fetchUserinfo)
 
 	function buildConfirmPayload(): ConfirmPayload {
 		const titles = Array.from(selectedTabs)
@@ -190,7 +180,7 @@ export function SheetSyncWizard(props: SheetSyncWizardProps) {
 							window.addEventListener('message', onMessage)
 						})
 						if (!token?.access_token) { uiLog('refresh userinfo: no token', true); setUiStep('auth'); return }
-						const u = await fetchGoogleUserinfo(token.access_token)
+						const u = await fetchUserinfo(token.access_token)
 						if (!u) { uiLog('refresh userinfo failed; token may be invalid', true); return }
 						setUserinfo(u)
 						parent.postMessage({ pluginMessage: { type: 'oauth/save', userinfo: u } }, '*')

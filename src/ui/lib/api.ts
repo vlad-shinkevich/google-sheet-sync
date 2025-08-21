@@ -57,4 +57,24 @@ export function extractDriveFileId(u: string): string | null {
   return null
 }
 
+// OAuth/Google helpers
+export async function fetchTokenInfo(accessToken: string): Promise<number> {
+  try {
+    const resp = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`)
+    return resp.status
+  } catch {
+    return 0
+  }
+}
+
+export async function fetchUserinfo(accessToken: string): Promise<{ email?: string; name?: string; picture?: string } | null> {
+  try {
+    const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${accessToken}` } })
+    if (res.status === 401) return null
+    if (!res.ok) return null
+    const u = await res.json()
+    return { email: u.email, name: u.name, picture: u.picture }
+  } catch { return null }
+}
+
 
