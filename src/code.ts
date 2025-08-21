@@ -225,15 +225,13 @@ async function applyRowToClone(clone: SceneNode, row: RowData): Promise<{ update
             const instances = byTag.instances.get(key) || []
             if (instances.length > 0) {
                 const raw = String(value)
-                if (isSpecialPrefixed(raw)) {
-                    // Variant by exact order and full set as in reference
-                    const stripped = stripSpecialPrefix(raw)
+                if (raw.includes('=')) {
+                    // Variant by exact order and full set as in reference (no '/' required)
                     for (const inst of instances) {
-                        try { await setInstanceVariantsStrict(inst, stripped); updated++ } catch { skipped++ }
+                        try { await setInstanceVariantsStrict(inst, raw); updated++ } catch { skipped++ }
                     }
                 } else {
                     // Component swap by main component name
-                    // Scope: current page (practically similar to reference's search area constraints)
                     const main = findMainComponentByNameInScope(figma.currentPage as any, raw)
                     if (!main) { skipped += instances.length }
                     else {
