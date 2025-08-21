@@ -12,6 +12,7 @@ import { loadAllFontsInNode } from './lib/figma/text'
 import { parseSolidPaintFromColor } from './lib/figma/colors'
 import { createImagePaintFromUrl } from './lib/figma/images'
 import { parseVariantAssignments, setInstanceVariants } from './lib/figma/variants'
+import { isSpecialPrefixed, stripSpecialPrefix, getVisibilityAction } from './lib/figma/special'
 
 // Show UI with fallback to minimal HTML if embedded UI fails to parse
 const uiSize = { width: 640, height: 420 }
@@ -143,31 +144,46 @@ async function applyRowToClone(clone: SceneNode, row: RowData): Promise<{ update
             try { console.log('[SYNC] forcing type image by tag name for', key) } catch {}
         }
         try { console.log('[SYNC] tag', key, 'type', type, 'value', String(value).slice(0, 120)) } catch {}
-        // Update text nodes
+        // Update text nodes (enforce '/' prefix for special types on text layers)
         const texts = byTag.text.get(key) || []
         for (const t of texts) {
             try {
                 await loadAllFontsInNode(t)
+                // Show/Hide for text layers requires '/'
+                const vis = getVisibilityAction(String(value), true)
+                if (vis) { t.visible = (vis === 'show'); updated++; continue }
+
+                const raw = String(value)
+                const isSpecial = isSpecialPrefixed(raw)
+                if (isSpecial) {
+                    const stripped = stripSpecialPrefix(raw)
+                    // Color for text must be prefixed '/'
+                    const solid = parseSolidPaintFromColor(stripped)
+                    if (solid) { t.fills = [solid]; updated++; continue }
+                    // Otherwise, unknown special on text → skip
+                    skipped++; continue
+                }
+
+                // Non-special: text content or hyperlink
                 if (type === 'link') {
                     t.characters = String(value)
-                    // add hyperlink to full range
                     try { t.setRangeHyperlink(0, t.characters.length, { type: 'URL', value: String(value) }) } catch {}
                     updated++
-                } else if (type === 'text' || type === 'image') {
-                    // For image type on text node, fallback to setting text
+                } else {
+                    // Treat image/link/text fallback as plain text
                     t.characters = String(value)
                     updated++
-                } else if (type === 'color') {
-                    // Apply text fill color
-                    const solid = parseSolidPaintFromColor(String(value))
-                    if (solid) {
-                        t.fills = [solid]
-                        updated++
-                    } else {
-                        skipped++
-                    }
                 }
             } catch { skipped++ }
+        }
+
+        // Show/Hide for fillable nodes (no '/' required)
+        {
+            const nodes = byTag.fillable.get(key) || []
+            const vis = getVisibilityAction(String(value), false)
+            if (vis && nodes.length > 0) {
+                for (const n of nodes) { try { n.visible = (vis === 'show'); updated++ } catch { skipped++ } }
+            }
         }
         // Update fillable nodes with image if applicable
         if (type === 'image') {
@@ -193,7 +209,7 @@ async function applyRowToClone(clone: SceneNode, row: RowData): Promise<{ update
         // Update fillable nodes with color if applicable
         if (type === 'color') {
             const nodes = byTag.fillable.get(key) || []
-            const paint = parseSolidPaintFromColor(String(value))
+            const paint = parseSolidPaintFromColor(stripSpecialPrefix(String(value)))
             try { console.log('[SYNC] color value', value, 'paint', !!paint, 'fillable nodes', nodes.length) } catch {}
             if (paint && nodes.length > 0) {
                 for (const n of nodes) {
@@ -207,12 +223,16 @@ async function applyRowToClone(clone: SceneNode, row: RowData): Promise<{ update
         if (type === 'variant') {
             const instances = byTag.instances.get(key) || []
             if (instances.length > 0) {
-                const assignments = parseVariantAssignments(String(value))
-                for (const inst of instances) {
-                    try {
-                        await setInstanceVariants(inst, assignments)
-                        updated++
-                    } catch { skipped++ }
+                const raw = String(value)
+                // For instances, require '/' for special variant assignment
+                if (!isSpecialPrefixed(raw)) {
+                    skipped += instances.length
+                } else {
+                    const stripped = stripSpecialPrefix(raw)
+                    const assignments = parseVariantAssignments(stripped)
+                    for (const inst of instances) {
+                        try { await setInstanceVariants(inst, assignments); updated++ } catch { skipped++ }
+                    }
                 }
             }
         }
