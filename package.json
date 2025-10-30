@@ -1,7 +1,7 @@
 {
-  "name": "Google-Sheet-Sync",
-  "version": "1.0.0",
-  "description": "Your Figma Plugin",
+  "name": "Excel-to-Figma-Sync",
+  "version": "2.0.0",
+  "description": "Sync Excel (XLSX) files to Figma",
   "main": "dist/code.js",
   "scripts": {
     "dev": "npm-run-all --parallel dev:ui dev:code",
@@ -46,7 +46,8 @@
     "lucide-react": "^0.452.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "tailwind-merge": "^2.5.2"
+    "tailwind-merge": "^2.5.2",
+    "xlsx": "^0.18.5"
   },
   "eslintConfig": {
     "extends": [

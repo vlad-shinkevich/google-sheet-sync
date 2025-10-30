@@ -1,6 +1,7 @@
 export function parseVariantAssignments(input: string): Record<string, string> | { __valueOnly: string } {
   const raw = String(input).trim()
-  const parts = raw.split(/\s*[|,]\s*/).filter(Boolean)
+  // Split by comma only (as per docs: "Property 1=Value, Property 2=Value")
+  const parts = raw.split(/\s*,\s*/).filter(Boolean)
   const map: Record<string, string> = {}
   let valueOnly: string | null = null
   for (const p of parts) {

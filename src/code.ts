@@ -38,34 +38,6 @@ figma.ui.onmessage = (msg) => {
         const h = Math.max(0, Math.round(msg.height))
         figma.ui.resize(w, h)
     }
-    if (msg.type === 'oauth/open' && typeof msg.url === 'string') {
-        figma.openExternal(msg.url)
-    }
-    if (msg.type === 'oauth/save' && (msg.token || msg.userinfo)) {
-        const ops: Promise<any>[] = []
-        if (msg.token) ops.push(figma.clientStorage.setAsync('googleTokens', msg.token))
-        if (msg.userinfo) ops.push(figma.clientStorage.setAsync('googleUserinfo', msg.userinfo))
-        Promise.all(ops).then(() => {
-            figma.notify('Google connected')
-        })
-    }
-    if (msg.type === 'oauth/get') {
-        Promise.all([
-            figma.clientStorage.getAsync('googleTokens'),
-            figma.clientStorage.getAsync('googleUserinfo'),
-        ]).then(([token, userinfo]) => {
-            figma.ui.postMessage({ type: 'oauth/token', token, userinfo })
-        })
-    }
-    if (msg.type === 'oauth/clear') {
-        Promise.all([
-            figma.clientStorage.setAsync('googleTokens', null as any),
-            figma.clientStorage.setAsync('googleUserinfo', null as any),
-        ]).then(() => {
-            figma.notify('Google auth reset')
-            figma.ui.postMessage({ type: 'oauth/token', token: null, userinfo: null })
-        })
-    }
     if (msg.type === 'sync/text' && msg.payload) {
         handleSyncText(msg.payload as any).catch((error) => {
             try { figma.notify('Sync failed') } catch {}
@@ -92,25 +64,37 @@ type RowData = Record<string, string>
 function detectFieldType(value: string, tagKey?: string): 'image' | 'link' | 'text' | 'color' | 'variant' {
     const v = String(value || '').trim()
     if (!v) return 'text'
-    // Tag-driven hints
+    
+    // Tag-driven hints first
     if (tagKey && /variant/i.test(tagKey)) return 'variant'
     if (tagKey && /color|colour/i.test(tagKey)) return 'color'
-    try {
-        const u = new URL(v)
-        const host = u.host.toLowerCase()
-        const pathname = u.pathname.toLowerCase()
-        const isImageExt = /\.(png|jpe?g|gif|webp|svg)$/i.test(pathname)
-        const isGDrive = host.endsWith('googleusercontent.com') || host.includes('drive.google.com')
-        const knownCdn = host.includes('unsplash.com') || host.includes('picsum.photos') || host.includes('cloudinary.com')
-        if (isImageExt || isGDrive || knownCdn) return 'image'
-        return 'link'
-    } catch {
-        // Possible color literals (hex)
-        if (/^#([0-9a-f]{3,8})$/i.test(v)) return 'color'
-        // Possible variant assignment syntax (Prop=Value|Prop2=Value2)
-        if (/=/.test(v)) return 'variant'
-        return 'text'
+    if (tagKey && /image|img|photo|picture|thumbnail|thumb|avatar|icon/i.test(tagKey)) return 'image'
+    
+    // Check if it's a URL starting with http:// or https://
+    if (/^https?:\/\//i.test(v)) {
+        try {
+            const u = new URL(v)
+            const host = u.host.toLowerCase()
+            const pathname = u.pathname.toLowerCase()
+            const isImageExt = /\.(png|jpe?g|gif|webp|svg)$/i.test(pathname)
+            const isGDrive = host.endsWith('googleusercontent.com') || host.includes('drive.google.com')
+            const knownCdn = host.includes('unsplash.com') || host.includes('picsum.photos') || host.includes('cloudinary.com')
+            if (isImageExt || isGDrive || knownCdn) return 'image'
+            return 'link'
+        } catch {
+            // If URL parsing fails, treat as link anyway
+            return 'link'
+        }
     }
+    
+    // Possible color literals (hex)
+    if (/^#([0-9a-f]{3,8})$/i.test(v)) return 'color'
+    
+    // Possible variant assignment syntax (Prop=Value, Prop2=Value)
+    // Must contain '=' and not start with http
+    if (/=/.test(v)) return 'variant'
+    
+    return 'text'
 }
 
 // moved to ./lib/figma/layers (NodesByTag internal)
@@ -140,7 +124,7 @@ async function applyRowToClone(clone: SceneNode, row: RowData): Promise<{ update
             missing.push(key); continue
         }
         let type = detectFieldType(value, key)
-        if (type !== 'image' && /image|img|photo|picture/i.test(key)) {
+        if (type !== 'image' && /image|img|photo|picture|thumbnail|thumb|avatar|icon/i.test(key)) {
             type = 'image'
             try { console.log('[SYNC] forcing type image by tag name for', key) } catch {}
         }

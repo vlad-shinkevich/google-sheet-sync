@@ -1,5 +1,5 @@
 {
-  "name": "Google Sheet Sync",
+  "name": "Excel to Figma Sync",
   "id": "1537444018854226185",
   "api": "1.0.0",
   "main": "dist/code.js",
@@ -14,14 +14,9 @@
   "ui": "dist/src/ui/ui.html",
   "networkAccess": {
     "allowedDomains": [
-      "https://google-sheet-sync-api.vercel.app",
-      "https://www.googleapis.com",
-      "https://sheets.googleapis.com",
-      "https://openidconnect.googleapis.com",
-      "https://lh3.googleusercontent.com",
-      "https://drive.google.com",
-      "https://oauth2.googleapis.com",
-      "https://images.unsplash.com"
-    ]
+      "*",
+      "https://corsproxy.io"
+    ],
+    "reasoning": "Allow fetching images from any URL specified in Excel files, including via CORS proxy for restricted sources"
   }
 }
